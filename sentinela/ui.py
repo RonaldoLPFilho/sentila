@@ -368,6 +368,132 @@ class Gauge(QWidget):
         p.drawText(QRectF(0, 136, self.width(), 22), Qt.AlignCenter, "pontuação de risco / 100")
 
 
+class SentinelAnim(QWidget):
+    """Sentinela em ronda: escudo com um feixe de radar girando, anéis que pulsam e um ponto em órbita. Só anima enquanto está VISÍVEL."""
+
+    def __init__(self, size: int = 76) -> None:
+        super().__init__()
+        self.setFixedSize(size, size)
+        self._t = 0.0
+        self._timer = QTimer(self, interval=33)
+        self._timer.timeout.connect(self._tick)
+
+    def showEvent(self, e) -> None:
+        self._timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e) -> None:
+        self._timer.stop()
+        super().hideEvent(e)
+
+    def _tick(self) -> None:
+        self._t += 0.033
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        import math
+        from PySide6.QtGui import QConicalGradient, QRadialGradient
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        cx = cy = w / 2
+        r = w / 2 - 3
+        # anéis que pulsam (sonar)
+        for k in range(2):
+            ph = (self._t * 0.8 + k * 0.5) % 1.0
+            c = QColor(ACCENT)
+            c.setAlphaF(max(0.0, 0.45 * (1 - ph)))
+            p.setPen(QPen(c, 1.6))
+            p.setBrush(Qt.NoBrush)
+            rr = r * (0.55 + 0.45 * ph)
+            p.drawEllipse(QPointF(cx, cy), rr, rr)
+        # feixe de radar girando
+        ang = (self._t * 140) % 360
+        g = QConicalGradient(cx, cy, -ang)
+        c0, c1 = QColor(ACCENT), QColor(ACCENT2)
+        c0.setAlphaF(0.0)
+        c1.setAlphaF(0.55)
+        g.setColorAt(0.0, c1)
+        g.setColorAt(0.22, c0)
+        g.setColorAt(1.0, c0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(g))
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        p.setPen(QPen(QColor(BORDER), 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        # escudo no centro, "respirando"
+        s = w * (0.50 + 0.025 * math.sin(self._t * 3.0))
+        draw_shield(p, cx, cy, s)
+        # ponto em órbita
+        a = math.radians(-ang * 1.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(GREEN))
+        p.drawEllipse(QPointF(cx + (r - 2) * math.cos(a), cy + (r - 2) * math.sin(a)), 2.6, 2.6)
+
+
+class ElapsedLabel(QLabel):
+    """Tempo decorrido da tarefa (relógio de parede). start() zera e roda; stop() congela."""
+
+    def __init__(self, prefix: str = "Tempo decorrido") -> None:
+        super().__init__("")
+        self._prefix = prefix
+        self._t0 = 0.0
+        self._end = 0.0
+        self._running = False
+        self.setTextFormat(Qt.PlainText)
+        self.setStyleSheet(f"color: {ACCENT}; font-size: 13px; font-weight: 600;")
+        self._timer = QTimer(self, interval=500)
+        self._timer.timeout.connect(self._refresh)
+        self._refresh()
+
+    @staticmethod
+    def fmt(sec: float) -> str:
+        s = int(max(0, sec))
+        return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+    def start(self) -> None:
+        import time as _t
+        self._t0, self._running = _t.time(), True
+        self._timer.start()
+        self._refresh()
+
+    def stop(self) -> None:
+        import time as _t
+        if self._running:
+            self._end, self._running = _t.time(), False
+        self._timer.stop()
+        self._refresh()
+
+    def seconds(self) -> float:
+        import time as _t
+        if not self._t0:
+            return 0.0
+        return (_t.time() if self._running else self._end) - self._t0
+
+    def _refresh(self) -> None:
+        self.setText(f"{self._prefix}: {self.fmt(self.seconds())}")
+
+
+def progress_header(title: str, meta: str = ""):
+    """Cartão de topo das telas de progresso: sentinela animada + título + descrição + tempo decorrido."""
+    c = card()
+    row = QHBoxLayout(c)
+    row.setContentsMargins(22, 14, 22, 14)
+    row.setSpacing(18)
+    row.addWidget(SentinelAnim(80), 0, Qt.AlignVCenter)
+    v = QVBoxLayout()
+    v.setSpacing(3)
+    t = lbl(title, 17, 700)
+    m = lbl(meta, 12, 400, MUTED, True)
+    el = ElapsedLabel()
+    v.addWidget(t)
+    v.addWidget(m)
+    v.addWidget(el)
+    row.addLayout(v, 1)
+    return c, t, m, el
+
+
 class FindingCard(QFrame):
     def __init__(self, f: Finding) -> None:
         super().__init__()
@@ -519,11 +645,17 @@ class TopBar(QFrame):
         for k, b in self.nav.items():
             b.setChecked(k == key)
 
+    NAV_TEXT = {"files": "Arquivos", "procs": "Processos", "net": "Rede", "scan": "Computador", "comps": "Componentes"}
+
     def set_busy(self, busy: bool) -> None:
-        """Durante uma análise não se troca de aba nem se abre Configurações."""
+        """Durante uma tarefa dá para NAVEGAR pelo app (as abas ficam ativas); só Configurações trava para não mudar opções no meio."""
         self.gear.setEnabled(not busy)
-        for b in self.nav.values():
-            b.setEnabled(not busy)
+
+    def set_marks(self, running: set, done: set) -> None:
+        """Indicador nas abas: ◌ = tarefa rodando nessa aba, ● = terminou enquanto você estava em outra aba."""
+        for k, b in self.nav.items():
+            mark = " ◌" if k in running else " ●" if k in done else ""
+            b.setText(self.NAV_TEXT[k] + mark)
 
 
 class HomePage(QWidget):
@@ -548,6 +680,10 @@ class HomePage(QWidget):
             chips.addWidget(c)
         chips.addStretch()
         root.addLayout(chips)
+
+    def set_locked(self, locked: bool) -> None:
+        self.drop.setEnabled(not locked)
+        self.drop.setToolTip("Há uma tarefa em andamento: aguarde terminar ou cancele." if locked else "")
 
     def refresh(self, settings: Settings) -> None:
         self.c_vt.set("VirusTotal ativo" if settings.vt_key else "VirusTotal sem chave", bool(settings.vt_key) or None)
@@ -640,17 +776,17 @@ class ProgressPage(QWidget):
         root.setSpacing(16)
         fc = card()
         fh = QHBoxLayout(fc)
-        fh.setContentsMargins(20, 16, 20, 16)
-        ic = QLabel()
-        ic.setPixmap(app_icon().pixmap(QSize(38, 38)))
-        fh.addWidget(ic)
+        fh.setContentsMargins(20, 12, 20, 12)
+        fh.setSpacing(16)
+        fh.addWidget(SentinelAnim(72), 0, Qt.AlignVCenter)
         fv = QVBoxLayout()
         fv.setSpacing(2)
         self.name = lbl("", 17, 700)
         self.meta = lbl("", 12, 400, MUTED)
+        self.elapsed = ElapsedLabel()
         fv.addWidget(self.name)
         fv.addWidget(self.meta)
-        fh.addSpacing(8)
+        fv.addWidget(self.elapsed)
         fh.addLayout(fv, 1)
         root.addWidget(fc)
 
@@ -691,6 +827,7 @@ class ProgressPage(QWidget):
         self.cancel.emit()
 
     def reset(self, path: Path, size: int) -> None:
+        self.elapsed.start()
         self.decision.stop()
         self.name.setText(path.name)
         self.meta.setText(f"{human_size(size)} · {path.parent}")
@@ -945,6 +1082,8 @@ class MainWindow(QMainWindow):
         self.net = NetPage(self.settings)
         self.scan = ScanPage(self.settings)
         self._procs_busy = False
+        self._prev_busy: dict = {}
+        self._done_marks: set = set()
         self._files_widget: QWidget = self.home
         for w in (self.home, self.progress, self.result, self.procs, self.net, self.scan, self.comps):
             self.stack.addWidget(w)
@@ -981,12 +1120,63 @@ class MainWindow(QMainWindow):
         self.result.saveReport.connect(self.save_report)
         self.result.forceSandbox.connect(lambda: self.start_analysis(str(self.path), force=True))
         self.result.enableSandbox.connect(self.enable_sandbox)
+        for key, page in (("procs", self.procs), ("net", self.net), ("scan", self.scan), ("comps", self.comps)):
+            page.guard = self._make_guard(key)
+        self._busy_timer = QTimer(self, interval=300)
+        self._busy_timer.timeout.connect(self._tick_busy)
+        self._busy_timer.start()
         self.go_home()
+
+    # ---- estado de ocupado: dá para navegar, mas nada novo dispara enquanto algo roda
+    SECTIONS = ("files", "procs", "net", "scan", "comps")
+
+    def _busy_sources(self) -> dict:
+        return {"files": self._stage != "idle", "procs": bool(self.procs.worker and self.procs.worker.isRunning()),
+                "net": bool(self.net.worker and self.net.worker.isRunning()), "scan": bool(self.scan.worker and self.scan.worker.isRunning()),
+                "comps": bool(self.comps._busy)}
+
+    def _current_section(self) -> str:
+        cur = self.stack.currentWidget()
+        return "procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "scan" if cur is self.scan else "files"
+
+    LABELS = {"files": "a análise de arquivo", "procs": "a verificação de processos", "net": "o monitoramento de rede", "scan": "a verificação do computador",
+              "comps": "a instalação de componente"}
+
+    def _make_guard(self, me: str):
+        def guard() -> bool:
+            others = [k for k, v in self._busy_sources().items() if v and k != me]
+            if others:
+                QMessageBox.information(self, "Sentinela", f"Há uma tarefa em andamento ({self.LABELS[others[0]]}). Aguarde terminar ou cancele antes de iniciar outra.")
+                return False
+            return True
+        return guard
+
+    def _tick_busy(self) -> None:
+        busy = self._busy_sources()
+        cur = self._current_section()
+        for k in self.SECTIONS:
+            if self._prev_busy.get(k) and not busy[k] and k != cur:
+                self._done_marks.add(k)     # terminou enquanto você estava em outra aba
+        self._prev_busy = busy
+        self._done_marks.discard(cur)
+        anyb = any(busy.values())
+        self.home.set_locked(anyb)
+        for page in (self.procs, self.net, self.scan, self.comps):
+            page.set_locked(anyb)
+        self.topbar.set_busy(anyb)
+        self.topbar.set_marks({k for k, v in busy.items() if v and k != cur}, self._done_marks)
+
+    def _show_files(self, w: QWidget) -> None:
+        """Mostra uma tela do fluxo de arquivos SEM tirar você da aba em que está (a aba ganha um indicador)."""
+        self._files_widget = w
+        if self._current_section() == "files":
+            self.stack.setCurrentWidget(w)
 
     # ---- navegação
     def go_home(self) -> None:
+        self._stage = "idle"
         self.home.refresh(self.settings)
-        self.stack.setCurrentWidget(self.home)
+        self._show_files(self.home)
 
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self).exec():
@@ -997,7 +1187,7 @@ class MainWindow(QMainWindow):
         cur = self.stack.currentWidget()
         if cur not in (self.procs, self.comps, self.net, self.scan):
             self._files_widget = cur
-        self.topbar.set_busy(cur is self.progress or self._procs_busy)
+        self.topbar.set_busy(any(self._busy_sources().values()))
         self.topbar.set_section("procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "scan" if cur is self.scan else "files")
 
     def _on_procs_busy(self, busy: bool) -> None:
@@ -1017,10 +1207,14 @@ class MainWindow(QMainWindow):
             self.procs.refresh()
             self.stack.setCurrentWidget(self.procs)
         else:
-            self.stack.setCurrentWidget(self._files_widget if self._files_widget is not self.progress else self.home)
+            fw = self._files_widget
+            self.stack.setCurrentWidget(self.home if (fw is self.progress and self._stage == "idle") else fw)
         self._sync_chrome()
 
     def _analyze_from_procs(self, path: str) -> None:
+        if any(self._busy_sources().values()):
+            QMessageBox.information(self, "Sentinela", "Há uma tarefa em andamento. Aguarde terminar ou cancele antes de analisar outro arquivo.")
+            return
         self.stack.setCurrentWidget(self.home)
         self.start_analysis(path)
 
@@ -1035,6 +1229,7 @@ class MainWindow(QMainWindow):
         w.start()
 
     def _failed(self, tb: str) -> None:
+        self.progress.elapsed.stop()
         self.progress.decision.stop()
         self.analyzer.cleanup()
         if "FileNotFoundError" in tb or "No such file" in tb:
@@ -1044,6 +1239,7 @@ class MainWindow(QMainWindow):
         self.go_home()
 
     def _cancelled(self) -> None:
+        self.progress.elapsed.stop()
         self.progress.decision.stop()
         self.analyzer.cleanup()
         self.go_home()
@@ -1055,7 +1251,9 @@ class MainWindow(QMainWindow):
 
     # ---- fluxo
     def start_analysis(self, path_str: str, force: bool = False) -> None:
-        if (self.worker and self.worker.isRunning()) or self._procs_busy:
+        if (self.worker and self.worker.isRunning()) or any(self._busy_sources().values()):
+            if self.stack.currentWidget() is self.home:
+                QMessageBox.information(self, "Sentinela", "Há uma tarefa em andamento. Aguarde terminar ou cancele antes de analisar outro arquivo.")
             return
         self.path = Path(path_str)
         self._force = force
@@ -1129,7 +1327,8 @@ class MainWindow(QMainWindow):
     def _display(self, sr, sbr, verdict, freed, findings) -> None:
         can_force = bool(sr.candidates) and not (sbr and sbr.ran)
         self.result.show_result(sr, sbr, verdict, freed, getattr(self, "_shot", None), sandbox.available(), can_force, findings)
-        self.stack.setCurrentWidget(self.result)
+        self.progress.elapsed.stop()
+        self._show_files(self.result)
         self._stage = "idle"
 
     # ---- ações finais

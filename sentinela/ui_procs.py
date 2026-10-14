@@ -17,7 +17,7 @@ from . import procscan as ps
 from .checks import VirusTotal
 from .config import Settings
 from .scoring import Finding
-from .ui import ACCENT, AMBER, BORDER, GREEN, LEVEL_COLOR, MUTED, RED, TEXT, FindingCard, Gauge, StepRow, Worker, card, lbl, set_style
+from .ui import ACCENT, AMBER, BORDER, GREEN, LEVEL_COLOR, MUTED, RED, TEXT, FindingCard, Gauge, StepRow, Worker, card, lbl, progress_header, set_style
 
 PROC_STEPS = [
     ("inv", "Lista de processos em execução"),
@@ -273,6 +273,7 @@ class ProcessPage(ProcActionsMixin, QWidget):
         self.rep: ps.ScanReport | None = None
         self._cancel = False
         self.rows: dict[str, StepRow] = {}
+        self.guard = lambda: True
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
@@ -346,12 +347,7 @@ class ProcessPage(ProcActionsMixin, QWidget):
         root = QVBoxLayout(w)
         root.setContentsMargins(48, 32, 48, 28)
         root.setSpacing(16)
-        c = card()
-        h = QVBoxLayout(c)
-        h.setContentsMargins(22, 16, 22, 16)
-        h.addWidget(lbl("Verificando processos…", 17, 700))
-        self.prog_meta = lbl("", 12, 400, MUTED, True)
-        h.addWidget(self.prog_meta)
+        c, _t, self.prog_meta, self.elapsed = progress_header("Verificando processos…")
         root.addWidget(c)
         self.steps_card = card()
         sl = QVBoxLayout(self.steps_card)
@@ -480,9 +476,16 @@ class ProcessPage(ProcActionsMixin, QWidget):
                 r.icon.update()
 
     # ---------------------------------------------------------------- execução
+    def set_locked(self, locked: bool) -> None:
+        self.go.setEnabled(not locked)
+        self.go.setToolTip("Há uma tarefa em andamento." if locked else "")
+
     def start(self) -> None:
         if self.worker and self.worker.isRunning():
             return
+        if not self.guard():
+            return
+        self.elapsed.start()
         secs = int(self.secs.currentData() or 60)
         self.settings.data["proc_seconds"] = secs
         self.settings.data["proc_vt"] = self.use_vt.isChecked()
@@ -533,10 +536,12 @@ class ProcessPage(ProcActionsMixin, QWidget):
         self.cancel_btn.setText("Cancelando…")
 
     def _on_cancelled(self) -> None:
+        self.elapsed.stop()
         self.busyChanged.emit(False)
         self.show_idle()
 
     def _on_failed(self, tb: str) -> None:
+        self.elapsed.stop()
         self.busyChanged.emit(False)
         m = QMessageBox(QMessageBox.Critical, "Sentinela", "A verificação falhou por um erro inesperado.\n\n" + tb[-900:], parent=self)
         m.setTextFormat(Qt.PlainText)
@@ -544,6 +549,7 @@ class ProcessPage(ProcActionsMixin, QWidget):
         self.show_idle()
 
     def _on_done(self, rep: ps.ScanReport) -> None:
+        self.elapsed.stop()
         self.rep = rep
         self.busyChanged.emit(False)
         QTimer.singleShot(350, lambda: self.show_result(rep))

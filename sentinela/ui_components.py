@@ -117,12 +117,20 @@ class ComponentCard(QFrame):
         set_style(self.state, color)
         self.detail.setText(clean_text(st.detail, 300))
         self.steps.setVisible(st.state != comp.OK)
-        self.b_rm.setEnabled(st.state != comp.MISSING)
+        self._state = st.state
+        self.b_rm.setEnabled(st.state != comp.MISSING and not getattr(self, "_locked", False))
         self.b_import.setText("Importar pacote…" if st.state in (comp.MISSING, comp.UNTRUSTED, comp.UNREADABLE) else "Importar versão nova…")
+
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        self.b_import.setEnabled(not locked)
+        self.b_rm.setEnabled(not locked and getattr(self, "_state", comp.MISSING) != comp.MISSING)
 
     def busy(self, on: bool, text: str = "") -> None:
         for b in (self.b_page, self.b_import, self.b_re, self.b_rm):
             b.setEnabled(not on)
+        if not on:
+            self.set_locked(getattr(self, "_locked", False))
         self.progress.setVisible(on)
         self.progress.setText(clean_text(text, 200))
 
@@ -151,6 +159,8 @@ class ComponentsPage(QWidget):
         self._keep: list[Worker] = []
         self._pending = False
         self._busy = False
+        self.guard = lambda: True
+        self._locked = False
         root = QVBoxLayout(self)
         root.setContentsMargins(40, 26, 40, 22)
         root.setSpacing(12)
@@ -251,7 +261,14 @@ class ComponentsPage(QWidget):
         if safe_url(c.get("download_page", ""), urls):
             QDesktopServices.openUrl(QUrl(c["download_page"]))
 
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        for c in self.cards.values():
+            c.set_locked(locked)
+
     def _import(self, name: str, zip_path: str) -> None:
+        if not self.guard():
+            return
         c = self.manifest["components"][name]
         zp = Path(zip_path)
         sigp = zp.with_name(zp.name + ".sig")

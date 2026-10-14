@@ -13,7 +13,7 @@ from . import netmon as nm
 from . import procscan as ps
 from .config import Settings
 from .scoring import Finding
-from .ui import ACCENT, AMBER, BG, BORDER, GREEN, LEVEL_COLOR, MUTED, SURFACE, TEXT, FindingCard, Gauge, StepRow, Worker, card, lbl, set_style
+from .ui import ACCENT, AMBER, BG, BORDER, GREEN, LEVEL_COLOR, MUTED, SURFACE, TEXT, FindingCard, Gauge, SentinelAnim, StepRow, Worker, card, lbl, set_style
 from .ui_procs import ProcActionsMixin, wrapable
 
 STEPS = [("inv", "Lista de processos"), ("mon", "Monitoramento das conexões e do tráfego por adaptador"),
@@ -78,6 +78,8 @@ class NetPage(ProcActionsMixin, QWidget):
         self._cancel = False
         self._keep: list = []
         self.rows: dict[str, StepRow] = {}
+        self.guard = lambda: True
+        self._locked = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
@@ -131,7 +133,7 @@ class NetPage(ProcActionsMixin, QWidget):
         self.go = QPushButton("Iniciar monitoramento")
         self.go.setObjectName("primary")
         self.go.setEnabled(False)
-        self.ok.toggled.connect(self.go.setEnabled)
+        self.ok.toggled.connect(lambda _v: self._update_go())
         self.go.clicked.connect(self.start)
         v.addSpacing(4)
         v.addWidget(self.go, 0, Qt.AlignLeft)
@@ -148,7 +150,11 @@ class NetPage(ProcActionsMixin, QWidget):
         c = card()
         h = QVBoxLayout(c)
         h.setContentsMargins(22, 16, 22, 16)
-        h.addWidget(lbl("Monitorando a rede…", 17, 700))
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        top.addWidget(SentinelAnim(64), 0, Qt.AlignVCenter)
+        top.addWidget(lbl("Monitorando a rede…", 17, 700), 1)
+        h.addLayout(top)
         self.live_text = lbl("", 13, 400, MUTED, True)
         h.addWidget(self.live_text)
         self.timeline = Timeline()
@@ -227,6 +233,14 @@ class NetPage(ProcActionsMixin, QWidget):
         return w
 
     # ------------------------------------------------------------------ estados
+    def _update_go(self) -> None:
+        self.go.setEnabled(self.ok.isChecked() and not self._locked)
+        self.go.setToolTip("Há uma tarefa em andamento." if self._locked else "")
+
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        self._update_go()
+
     def show_idle(self) -> None:
         self.refresh()
         self.stack.setCurrentWidget(self.idle)
@@ -243,6 +257,8 @@ class NetPage(ProcActionsMixin, QWidget):
 
     def start(self) -> None:
         if self.worker and self.worker.isRunning():
+            return
+        if not self.guard():
             return
         secs = int(self.secs.currentData() if self.secs.currentData() is not None else 900)
         self.settings.data["net_seconds"] = secs

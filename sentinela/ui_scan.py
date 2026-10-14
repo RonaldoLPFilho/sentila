@@ -19,7 +19,7 @@ from . import scanengines as se
 from .checks import VirusTotal
 from .config import Settings
 from .scoring import Finding
-from .ui import AMBER, GREEN, LEVEL_COLOR, MUTED, RED, TEXT, FindingCard, Gauge, StepRow, Worker, card, lbl, set_style
+from .ui import AMBER, GREEN, LEVEL_COLOR, MUTED, RED, TEXT, FindingCard, Gauge, StepRow, Worker, card, lbl, progress_header, set_style
 from .ui_procs import wrapable
 
 STEPS = [("upd", "Atualizar o Defender"), ("def", "Defender: varredura"), ("proc", "Processos em execução"), ("per", "O que inicia com o Windows"),
@@ -153,6 +153,7 @@ class ScanPage(QWidget):
         self._cancel = False
         self._keep: list = []
         self.rows: dict[str, StepRow] = {}
+        self.guard = lambda: True
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
@@ -218,13 +219,8 @@ class ScanPage(QWidget):
         root = QVBoxLayout(w)
         root.setContentsMargins(48, 32, 48, 28)
         root.setSpacing(16)
-        c = card()
-        h = QVBoxLayout(c)
-        h.setContentsMargins(22, 16, 22, 16)
-        self.prog_title = lbl("Verificando o computador…", 17, 700)
-        h.addWidget(self.prog_title)
-        self.prog_meta = lbl("Você pode usar o PC; a verificação usa prioridade baixa. Cancelar encerra todos os scanners.", 12, 400, MUTED, True)
-        h.addWidget(self.prog_meta)
+        c, self.prog_title, self.prog_meta, self.elapsed = progress_header(
+            "Verificando o computador…", "Você pode navegar pelo app e usar o PC; a verificação usa prioridade baixa e nada novo é iniciado enquanto ela roda. Cancelar encerra todos os scanners.")
         root.addWidget(c)
         sc = card()
         sl = QVBoxLayout(sc)
@@ -299,6 +295,10 @@ class ScanPage(QWidget):
         return w
 
     # ---------------------------------------------------------------- estado
+    def set_locked(self, locked: bool) -> None:
+        self.go.setEnabled(not locked)
+        self.go.setToolTip("Há uma tarefa em andamento." if locked else "")
+
     def show_idle(self) -> None:
         self.refresh()
         self.stack.setCurrentWidget(self.idle)
@@ -336,6 +336,8 @@ class ScanPage(QWidget):
     def start(self) -> None:
         if self.worker and self.worker.isRunning():
             return
+        if not self.guard():
+            return
         mode = self.mode.currentData() or "quick"
         if mode == "full":
             m = QMessageBox(QMessageBox.Question, "Sentinela", "A verificação Completa pode levar de 1 a 3 horas e usa disco e CPU (em prioridade baixa). Continuar?", parent=self)
@@ -354,6 +356,7 @@ class ScanPage(QWidget):
             self.rows[sid].update_state("pending", "Aguardando…")
             self.rows[sid].detail.setText("Aguardando…")
         self.prog_title.setText(f"Verificando o computador ({pc.MODES[mode].lower()})…")
+        self.elapsed.start()
         self.stack.setCurrentWidget(self.prog)
         self.busyChanged.emit(True)
         ids = [s for s, _ in STEPS]
@@ -387,10 +390,12 @@ class ScanPage(QWidget):
         self.cancel_btn.setText("Cancelando…")
 
     def _on_cancelled(self) -> None:
+        self.elapsed.stop()
         self.busyChanged.emit(False)
         self.show_idle()
 
     def _on_failed(self, tb: str) -> None:
+        self.elapsed.stop()
         self.busyChanged.emit(False)
         m = QMessageBox(QMessageBox.Critical, "Sentinela", "A verificação falhou por um erro inesperado.\n\n" + tb[-900:], parent=self)
         m.setTextFormat(Qt.PlainText)
@@ -398,6 +403,7 @@ class ScanPage(QWidget):
         self.show_idle()
 
     def _on_done(self, rep: pc.PcReport) -> None:
+        self.elapsed.stop()
         self.rep = rep
         self.busyChanged.emit(False)
         QTimer.singleShot(300, lambda: self.show_result(rep))
