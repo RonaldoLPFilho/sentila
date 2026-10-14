@@ -499,7 +499,7 @@ class TopBar(QFrame):
         h.addWidget(self.version, 0, Qt.AlignVCenter)
         h.addSpacing(18)
         self.nav: dict[str, QPushButton] = {}
-        for key, text in (("files", "Arquivos"), ("procs", "Processos"), ("net", "Rede"), ("comps", "Componentes")):
+        for key, text in (("files", "Arquivos"), ("procs", "Processos"), ("net", "Rede"), ("scan", "Computador"), ("comps", "Componentes")):
             b = QPushButton(text)
             b.setObjectName("nav")
             b.setCheckable(True)
@@ -939,12 +939,14 @@ class MainWindow(QMainWindow):
         self.home, self.progress, self.result = HomePage(), ProgressPage(), ResultPage()
         from .ui_components import ComponentsPage
         from .ui_net import NetPage
+        from .ui_scan import ScanPage
         self.procs = ProcessPage(self.settings)
         self.comps = ComponentsPage(self.settings)
         self.net = NetPage(self.settings)
+        self.scan = ScanPage(self.settings)
         self._procs_busy = False
         self._files_widget: QWidget = self.home
-        for w in (self.home, self.progress, self.result, self.procs, self.net, self.comps):
+        for w in (self.home, self.progress, self.result, self.procs, self.net, self.scan, self.comps):
             self.stack.addWidget(w)
         self.topbar = TopBar()
         central = QWidget()
@@ -960,6 +962,9 @@ class MainWindow(QMainWindow):
         self.procs.busyChanged.connect(self._on_procs_busy)
         self.comps.busyChanged.connect(self._on_procs_busy)
         self.net.busyChanged.connect(self._on_procs_busy)
+        self.scan.busyChanged.connect(self._on_procs_busy)
+        self.scan.analyzeFile.connect(self._analyze_from_procs)
+        self.scan.openComponents.connect(lambda: self.navigate("comps"))
         self.net.analyzeFile.connect(self._analyze_from_procs)
         self.topbar.navigate.connect(self.navigate)
         self.procs.analyzeFile.connect(self._analyze_from_procs)
@@ -990,10 +995,10 @@ class MainWindow(QMainWindow):
 
     def _sync_chrome(self, *_a) -> None:
         cur = self.stack.currentWidget()
-        if cur not in (self.procs, self.comps, self.net):
+        if cur not in (self.procs, self.comps, self.net, self.scan):
             self._files_widget = cur
         self.topbar.set_busy(cur is self.progress or self._procs_busy)
-        self.topbar.set_section("procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "files")
+        self.topbar.set_section("procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "scan" if cur is self.scan else "files")
 
     def _on_procs_busy(self, busy: bool) -> None:
         self._procs_busy = busy
@@ -1002,6 +1007,9 @@ class MainWindow(QMainWindow):
     def navigate(self, key: str) -> None:
         if key == "comps":
             self.stack.setCurrentWidget(self.comps)
+        elif key == "scan":
+            self.scan.refresh()
+            self.stack.setCurrentWidget(self.scan)
         elif key == "net":
             self.net.refresh()
             self.stack.setCurrentWidget(self.net)
@@ -1191,6 +1199,9 @@ class MainWindow(QMainWindow):
         self.analyzer.cancel()
         self.procs._cancel = True
         self.net._cancel = True
+        self.scan._cancel = True
+        if self.scan.worker and self.scan.worker.isRunning():
+            self.scan.worker.wait(10000)
         self.net.live.stop = True
         if self.net.worker and self.net.worker.isRunning():
             self.net.worker.wait(8000)
