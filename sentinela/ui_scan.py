@@ -405,6 +405,13 @@ class ScanPage(QWidget):
     def _on_done(self, rep: pc.PcReport) -> None:
         self.elapsed.stop()
         self.rep = rep
+        try:
+            from . import history
+            v = rep.verdict
+            history.record("pc", f"Verificação do computador ({pc.MODES.get(rep.mode, rep.mode).lower()})", v.level, v.headline, v.score, v.summary,
+                           pc.report_text(rep, True), rep.elapsed, f"{rep.stats.get('persist_total', 0)} itens de inicialização")
+        except Exception:  # noqa: BLE001
+            pass
         self.busyChanged.emit(False)
         QTimer.singleShot(300, lambda: self.show_result(rep))
 

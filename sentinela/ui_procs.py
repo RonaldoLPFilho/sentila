@@ -551,6 +551,13 @@ class ProcessPage(ProcActionsMixin, QWidget):
     def _on_done(self, rep: ps.ScanReport) -> None:
         self.elapsed.stop()
         self.rep = rep
+        try:
+            from . import history
+            v = rep.verdict
+            history.record("procs", "Verificação de processos", v.level, v.headline, v.score, v.summary, ps.report_text(rep, True), rep.elapsed,
+                           f"{rep.stats.get('total', 0)} processos")
+        except Exception:  # noqa: BLE001
+            pass
         self.busyChanged.emit(False)
         QTimer.singleShot(350, lambda: self.show_result(rep))
 

@@ -62,6 +62,10 @@ QPushButton#nav {{ background: transparent; border: none; border-radius: 8px; co
 QPushButton#nav:hover {{ color: {TEXT}; background: {SURFACE2}; }}
 QPushButton#nav:checked {{ color: {TEXT}; background: {SURFACE2}; border: 1px solid {BORDER}; }}
 QPushButton#nav:disabled {{ color: {MUTED}; background: transparent; }}
+QFrame#subbar {{ background: {BG}; border: none; border-bottom: 1px solid {BORDER}; }}
+QPushButton#sub {{ background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: {MUTED}; padding: 10px 16px; font-weight: 600; }}
+QPushButton#sub:hover {{ color: {TEXT}; }}
+QPushButton#sub:checked {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 30px; }}
@@ -93,8 +97,27 @@ def set_style(w: QLabel, color: str) -> None:
     w.setStyleSheet(f"color: {color}; font-size: {w._size}px; font-weight: {w._weight};")
 
 
+class FitCard(QFrame):
+    """Cartão que respeita a altura real dos textos com quebra de linha (o Qt às vezes calcula a altura com a largura errada e corta o texto)."""
+
+    def _fit(self) -> None:
+        lay = self.layout()
+        if lay is not None and lay.hasHeightForWidth() and self.width() > 0:
+            h = lay.heightForWidth(self.width())
+            if h > 0 and h != self.minimumHeight():
+                self.setMinimumHeight(h)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._fit()
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        self._fit()
+
+
 def card(name: str = "card") -> QFrame:
-    f = QFrame()
+    f = FitCard()
     f.setObjectName(name)
     return f
 
@@ -625,7 +648,7 @@ class TopBar(QFrame):
         h.addWidget(self.version, 0, Qt.AlignVCenter)
         h.addSpacing(18)
         self.nav: dict[str, QPushButton] = {}
-        for key, text in (("files", "Arquivos"), ("procs", "Processos"), ("net", "Rede"), ("scan", "Computador"), ("comps", "Componentes")):
+        for key, text in (("scan", "Scan"), ("history", "Histórico"), ("comps", "Componentes")):
             b = QPushButton(text)
             b.setObjectName("nav")
             b.setCheckable(True)
@@ -641,11 +664,14 @@ class TopBar(QFrame):
         self.gear.clicked.connect(self.openSettings)
         h.addWidget(self.gear)
 
-    def set_section(self, key: str) -> None:
-        for k, b in self.nav.items():
-            b.setChecked(k == key)
+    GROUP = ("files", "procs", "net", "pc")          # as opções de Scan
 
-    NAV_TEXT = {"files": "Arquivos", "procs": "Processos", "net": "Rede", "scan": "Computador", "comps": "Componentes"}
+    def set_section(self, key: str) -> None:
+        main = "scan" if key in self.GROUP else key
+        for k, b in self.nav.items():
+            b.setChecked(k == main)
+
+    NAV_TEXT = {"scan": "Scan", "history": "Histórico", "comps": "Componentes"}
 
     def set_busy(self, busy: bool) -> None:
         """Durante uma tarefa dá para NAVEGAR pelo app (as abas ficam ativas); só Configurações trava para não mudar opções no meio."""
@@ -653,9 +679,46 @@ class TopBar(QFrame):
 
     def set_marks(self, running: set, done: set) -> None:
         """Indicador nas abas: ◌ = tarefa rodando nessa aba, ● = terminou enquanto você estava em outra aba."""
+        g_run, g_done = bool(running & set(self.GROUP)), bool(done & set(self.GROUP))
         for k, b in self.nav.items():
-            mark = " ◌" if k in running else " ●" if k in done else ""
+            if k == "scan":
+                mark = " ◌" if g_run else " ●" if g_done else ""
+            else:
+                mark = " ◌" if k in running else " ●" if k in done else ""
             b.setText(self.NAV_TEXT[k] + mark)
+
+
+class SubBar(QFrame):
+    """Segunda barra, visível só dentro de "Scan": as formas de analisar (Arquivos, Processos, Rede, Computador)."""
+    navigate = Signal(str)
+    ITEMS = (("files", "Arquivos"), ("procs", "Processos"), ("net", "Rede"), ("pc", "Computador"))
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("subbar")
+        self.setFixedHeight(46)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(24, 0, 24, 0)
+        h.setSpacing(8)
+        self.btn: dict[str, QPushButton] = {}
+        for key, text in self.ITEMS:
+            b = QPushButton(text)
+            b.setObjectName("sub")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.navigate.emit(k))
+            self.btn[key] = b
+            h.addWidget(b)
+        h.addStretch()
+
+    def set_section(self, key: str) -> None:
+        for k, b in self.btn.items():
+            b.setChecked(k == key)
+
+    def set_marks(self, running: set, done: set) -> None:
+        names = dict(self.ITEMS)
+        for k, b in self.btn.items():
+            b.setText(names[k] + (" ◌" if k in running else " ●" if k in done else ""))
 
 
 class HomePage(QWidget):
@@ -1077,15 +1140,18 @@ class MainWindow(QMainWindow):
         from .ui_components import ComponentsPage
         from .ui_net import NetPage
         from .ui_scan import ScanPage
+        from .ui_history import HistoryPage
         self.procs = ProcessPage(self.settings)
         self.comps = ComponentsPage(self.settings)
         self.net = NetPage(self.settings)
         self.scan = ScanPage(self.settings)
+        self.history = HistoryPage()
+        self._last_sub = "files"
         self._procs_busy = False
         self._prev_busy: dict = {}
         self._done_marks: set = set()
         self._files_widget: QWidget = self.home
-        for w in (self.home, self.progress, self.result, self.procs, self.net, self.scan, self.comps):
+        for w in (self.home, self.progress, self.result, self.procs, self.net, self.scan, self.comps, self.history):
             self.stack.addWidget(w)
         self.topbar = TopBar()
         central = QWidget()
@@ -1093,7 +1159,9 @@ class MainWindow(QMainWindow):
         col = QVBoxLayout(central)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
+        self.subbar = SubBar()
         col.addWidget(self.topbar)
+        col.addWidget(self.subbar)
         col.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         # configurações e troca de aba só quando não há análise em andamento
@@ -1106,6 +1174,7 @@ class MainWindow(QMainWindow):
         self.scan.openComponents.connect(lambda: self.navigate("comps"))
         self.net.analyzeFile.connect(self._analyze_from_procs)
         self.topbar.navigate.connect(self.navigate)
+        self.subbar.navigate.connect(self.navigate)
         self.procs.analyzeFile.connect(self._analyze_from_procs)
 
         self.home.drop.fileDropped.connect(self.start_analysis)
@@ -1120,26 +1189,28 @@ class MainWindow(QMainWindow):
         self.result.saveReport.connect(self.save_report)
         self.result.forceSandbox.connect(lambda: self.start_analysis(str(self.path), force=True))
         self.result.enableSandbox.connect(self.enable_sandbox)
-        for key, page in (("procs", self.procs), ("net", self.net), ("scan", self.scan), ("comps", self.comps)):
+        for key, page in (("procs", self.procs), ("net", self.net), ("pc", self.scan), ("comps", self.comps)):
             page.guard = self._make_guard(key)
         self._busy_timer = QTimer(self, interval=300)
         self._busy_timer.timeout.connect(self._tick_busy)
         self._busy_timer.start()
         self.go_home()
+        self._sync_chrome()
 
     # ---- estado de ocupado: dá para navegar, mas nada novo dispara enquanto algo roda
-    SECTIONS = ("files", "procs", "net", "scan", "comps")
+    SECTIONS = ("files", "procs", "net", "pc", "comps", "history")
 
     def _busy_sources(self) -> dict:
         return {"files": self._stage != "idle", "procs": bool(self.procs.worker and self.procs.worker.isRunning()),
-                "net": bool(self.net.worker and self.net.worker.isRunning()), "scan": bool(self.scan.worker and self.scan.worker.isRunning()),
+                "net": bool(self.net.worker and self.net.worker.isRunning()), "pc": bool(self.scan.worker and self.scan.worker.isRunning()),
                 "comps": bool(self.comps._busy)}
 
     def _current_section(self) -> str:
         cur = self.stack.currentWidget()
-        return "procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "scan" if cur is self.scan else "files"
+        return ("procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "pc" if cur is self.scan
+                else "history" if cur is self.history else "files")
 
-    LABELS = {"files": "a análise de arquivo", "procs": "a verificação de processos", "net": "o monitoramento de rede", "scan": "a verificação do computador",
+    LABELS = {"files": "a análise de arquivo", "procs": "a verificação de processos", "net": "o monitoramento de rede", "pc": "a verificação do computador",
               "comps": "a instalação de componente"}
 
     def _make_guard(self, me: str):
@@ -1155,7 +1226,7 @@ class MainWindow(QMainWindow):
         busy = self._busy_sources()
         cur = self._current_section()
         for k in self.SECTIONS:
-            if self._prev_busy.get(k) and not busy[k] and k != cur:
+            if self._prev_busy.get(k) and not busy.get(k, False) and k != cur:
                 self._done_marks.add(k)     # terminou enquanto você estava em outra aba
         self._prev_busy = busy
         self._done_marks.discard(cur)
@@ -1164,7 +1235,9 @@ class MainWindow(QMainWindow):
         for page in (self.procs, self.net, self.scan, self.comps):
             page.set_locked(anyb)
         self.topbar.set_busy(anyb)
-        self.topbar.set_marks({k for k, v in busy.items() if v and k != cur}, self._done_marks)
+        running = {k for k, v in busy.items() if v and k != cur}
+        self.topbar.set_marks(running, self._done_marks)
+        self.subbar.set_marks(running, self._done_marks)
 
     def _show_files(self, w: QWidget) -> None:
         """Mostra uma tela do fluxo de arquivos SEM tirar você da aba em que está (a aba ganha um indicador)."""
@@ -1185,19 +1258,29 @@ class MainWindow(QMainWindow):
 
     def _sync_chrome(self, *_a) -> None:
         cur = self.stack.currentWidget()
-        if cur not in (self.procs, self.comps, self.net, self.scan):
+        if cur not in (self.procs, self.comps, self.net, self.scan, self.history):
             self._files_widget = cur
         self.topbar.set_busy(any(self._busy_sources().values()))
-        self.topbar.set_section("procs" if cur is self.procs else "comps" if cur is self.comps else "net" if cur is self.net else "scan" if cur is self.scan else "files")
+        sec = self._current_section()
+        self.topbar.set_section(sec)
+        self.subbar.set_section(sec)
+        self.subbar.setVisible(sec in TopBar.GROUP)
 
     def _on_procs_busy(self, busy: bool) -> None:
         self._procs_busy = busy
         self._sync_chrome()
 
     def navigate(self, key: str) -> None:
+        if key == "scan":                       # item principal "Scan": volta à última opção usada
+            key = self._last_sub
+        if key in TopBar.GROUP:
+            self._last_sub = key
         if key == "comps":
             self.stack.setCurrentWidget(self.comps)
-        elif key == "scan":
+        elif key == "history":
+            self.history.refresh()
+            self.stack.setCurrentWidget(self.history)
+        elif key == "pc":
             self.scan.refresh()
             self.stack.setCurrentWidget(self.scan)
         elif key == "net":
@@ -1328,6 +1411,12 @@ class MainWindow(QMainWindow):
         can_force = bool(sr.candidates) and not (sbr and sbr.ran)
         self.result.show_result(sr, sbr, verdict, freed, getattr(self, "_shot", None), sandbox.available(), can_force, findings)
         self.progress.elapsed.stop()
+        try:
+            from . import history as _hist
+            _hist.record("files", sr.path.name, verdict.level, verdict.headline, verdict.score, verdict.summary, build_report(sr, sbr, verdict, findings),
+                         self.progress.elapsed.seconds(), KIND_LABEL.get(sr.kind, sr.kind))
+        except Exception:  # noqa: BLE001  o histórico nunca pode quebrar a análise
+            pass
         self._show_files(self.result)
         self._stage = "idle"
 

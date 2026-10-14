@@ -336,6 +336,13 @@ class NetPage(ProcActionsMixin, QWidget):
     def _on_done(self, rep: nm.NetReport) -> None:
         self.tick.stop()
         self.rep = rep
+        try:
+            from . import history
+            v = rep.verdict
+            history.record("net", "Monitoramento de rede", v.level, v.headline, v.score, v.summary, nm.report_text(rep, True), rep.window,
+                           f"{rep.stats.get('processes', 0)} programas · {rep.stats.get('destinations', 0)} destinos")
+        except Exception:  # noqa: BLE001
+            pass
         self.busyChanged.emit(False)
         QTimer.singleShot(300, lambda: self.show_result(rep))
 
