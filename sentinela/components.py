@@ -43,6 +43,7 @@ MANIFEST_PUBKEYS = [
     "Eh/2pS4TeOWDWwXux2sUhoF5826174RxuEUoIkTMi3M=",   # chave de DESENVOLVIMENTO (a de release deve ser offline e substituir esta)
 ]
 SERIAL_KEY = r"Software\Sentinela"
+MIN_SERIAL = 1   # piso NO CÓDIGO: apagar/baixar o serial do registro não reabre manifestos mais antigos que este (suba a cada release)
 MAX_MANIFEST = 1 << 20
 
 # estados mostrados na tela Componentes
@@ -101,7 +102,7 @@ def verify_manifest(manifest_bytes: bytes, sig_b64: bytes, pubkeys: list[str] | 
             continue
     if not good:
         raise ComponentError("assinatura do manifesto inválida")
-    floor = load_serial() if min_serial is None else min_serial
+    floor = max(load_serial(), MIN_SERIAL) if min_serial is None else min_serial
     if obj["serial"] < floor:
         raise ComponentError("manifesto mais antigo que o já visto neste PC (possível rollback)")
     return obj
@@ -336,6 +337,19 @@ class PinnedRun:
             self.__exit__(None, None, None)
             raise
         return self
+
+    def verify_names(self) -> tuple[bool, str]:
+        """Barato (sem hash): a lista de nomes da pasta privada continua igual à do manifesto (nenhum arquivo novo plantado)."""
+        try:
+            got = {f.relative_to(self.dir).as_posix().lower() for f in Path(self.dir).rglob("*") if f.is_file()}
+            got = {g for g in got if not g.startswith(".work/")}   # arquivos de trabalho do próprio app (listas, configuração)
+        except OSError:
+            return False, "pasta ilegível"
+        exp = {k.lower() for k in self.comp["tree"]}
+        extra = sorted(got - exp)
+        if extra:
+            return False, "arquivo novo: " + extra[0]
+        return True, ""
 
     def exe(self, rel: str) -> str:
         p = (self.dir / rel).resolve()

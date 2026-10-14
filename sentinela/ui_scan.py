@@ -24,7 +24,7 @@ from .ui_procs import wrapable
 
 STEPS = [("upd", "Atualizar o Defender"), ("def", "Defender: varredura"), ("proc", "Processos em execução"), ("per", "O que inicia com o Windows"),
          ("hyg", "Higiene do Windows"), ("clam", "ClamAV: segunda opinião"), ("tri", "Triagem dos achados")]
-MODE_TEXT = (("quick", "Rápida (5 a 10 min): Defender rápido, processos, inicialização, higiene e ClamAV nos arquivos recentes e de risco"),
+MODE_TEXT = (("quick", "Rápida (10 a 15 min): Defender rápido, processos, inicialização, higiene e ClamAV só nos arquivos modificados nos últimos 30 dias nas pastas de risco"),
              ("full", "Completa (1 a 3 h): tudo da Rápida + Defender completo + ClamAV em todas as pastas de risco e de jogos/mods"))
 LEVEL_NAME = {"danger": "Perigoso", "caution": "Atenção", "ok": "Sem alerta"}
 
@@ -307,14 +307,14 @@ class ScanPage(QWidget):
         try:
             man = comp.load_bundled_manifest(save=False)
             st = comp.detect("clamav", man["components"]["clamav"], man)
-            has_db, age = se.clam_db_state()
+            has_db, age, why_db = se.clam_db_state()
             if st.state != comp.OK:
                 self.comp_line.setText("ClamAV não está instalado e verificado: a verificação roda sem a 2ª opinião e o resultado fica Inconclusivo. Instale pela aba Componentes.")
                 set_style(self.comp_line, AMBER)
                 self.upd.setEnabled(False)
                 self.upd.setChecked(False)
             else:
-                msg = "ClamAV instalado e verificado." + ("" if has_db else " Falta baixar as assinaturas (marque a opção abaixo).") + (f" Assinaturas com {int(age)} dias." if has_db and age > 7 else "")
+                msg = "ClamAV instalado e verificado." + ("" if has_db else f" Assinaturas: {why_db}. Marque a opção abaixo para baixar/refazer.") + (f" Assinaturas com {int(age)} dias." if has_db and age > 7 else "")
                 self.comp_line.setText(msg)
                 set_style(self.comp_line, GREEN if has_db and age <= 7 else AMBER)
                 self.upd.setEnabled(True)
@@ -478,7 +478,7 @@ class ScanPage(QWidget):
                          "Nada é apagado.", "Mover para a quarentena", danger=True):
             return
         try:
-            e = quar.quarantine(it.path, "; ".join(f.title for f in it.findings if f.points > 0)[:200], it.sig)
+            e = quar.quarantine(it.path, "; ".join(f.title for f in it.findings if f.points > 0)[:200], it.sig, it.sha256)
         except quar.QuarantineError as ex:
             QMessageBox.warning(self, "Sentinela", str(ex))
             return

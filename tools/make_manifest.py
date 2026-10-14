@@ -30,13 +30,25 @@ TALOS_FPR = "5BADCA2665EF59DCF8A23D8B707F0DB480836771"   # conferido em 3 fontes
 KEY_PATH = Path(os.environ.get("SENT_MANIFEST_KEY", Path.home() / ".sentinela-keys" / "manifest_ed25519.pem"))
 
 
+def _lock_dir(d: Path) -> None:
+    """Só o usuário atual lê a pasta da chave (sem herança)."""
+    import subprocess
+    subprocess.run(["icacls", str(d), "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME', '')}:(OI)(CI)F"], capture_output=True)
+
+
 def load_or_create_key() -> Ed25519PrivateKey:
+    """Chave de assinatura do manifesto. Defina SENT_MANIFEST_PASS para proteger o arquivo com senha. PARA RELEASE: chave OFFLINE/hardware,
+    nunca esta chave de desenvolvimento (ver components.MANIFEST_PUBKEYS)."""
+    pw = os.environ.get("SENT_MANIFEST_PASS", "").encode() or None
     if KEY_PATH.exists():
-        return serialization.load_pem_private_key(KEY_PATH.read_bytes(), None)
+        _lock_dir(KEY_PATH.parent)
+        return serialization.load_pem_private_key(KEY_PATH.read_bytes(), pw)
     KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _lock_dir(KEY_PATH.parent)
     k = Ed25519PrivateKey.generate()
-    KEY_PATH.write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    print(f"[!] chave NOVA criada em {KEY_PATH} (guarde; em produção use uma chave offline)")
+    enc = serialization.BestAvailableEncryption(pw) if pw else serialization.NoEncryption()
+    KEY_PATH.write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, enc))
+    print(f"[!] chave NOVA criada em {KEY_PATH} (guarde; em produção use uma chave offline)" + ("" if pw else " [SEM senha: defina SENT_MANIFEST_PASS]"))
     return k
 
 

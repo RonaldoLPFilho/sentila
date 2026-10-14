@@ -1215,6 +1215,11 @@ class MainWindow(QMainWindow):
 
 def main(argv: list[str]) -> int:
     Analyzer.purge_stale()
+    try:
+        from .components import purge_stale_runs
+        purge_stale_runs()
+    except Exception:  # noqa: BLE001
+        pass
     app = QApplication(argv)
     app.setStyleSheet(QSS)
     app.setApplicationName("Sentinela")

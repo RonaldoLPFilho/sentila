@@ -44,6 +44,8 @@ def run_round8(ctx) -> None:
 
         D = se.Detection
         fake = str(tmp / "mod" / "trainer.exe")
+        (tmp / "mod").mkdir()
+        Path(fake).write_bytes(b"MZ-fake-trainer")
         r = triage([D("defender", "Trojan:Win32/Wacatac.B!ml", fake)])[0]
         check("T1 Defender GENÉRICO sozinho => Atenção, nunca Perigoso", r.level == "caution" and r.score <= 30, f"{r.level} {r.score}")
         r = triage([D("clamav", "Win.Trojan.Agent-1234567", fake)])[0]
@@ -51,9 +53,13 @@ def run_round8(ctx) -> None:
         r = triage([D("defender", "Trojan:Win32/Lumma.GG!MTB", fake)])[0]
         check("T3 Defender com nome de FAMÍLIA => Perigoso", r.level == "danger", f"{r.level} {r.score}")
         r = triage([D("clamav", "Win.Ransomware.Lockbit-9876543-0", fake)])[0]
-        check("T4 ClamAV família SOZINHO => Atenção (não Perigoso)", r.level == "caution" and r.score == 30, f"{r.level} {r.score}")
+        check("T4 ClamAV família SOZINHO => Atenção (não Perigoso)", r.level == "caution" and r.score == 25, f"{r.level} {r.score}")
+        r = triage([D("clamav", "Win.Ransomware.Lockbit-9876543-0", fake), D("defender", "Trojan:Win32/Lumma.GG!MTB", fake)])[0]
+        check("T5 ClamAV família + Defender FAMÍLIA no MESMO arquivo => Perigoso (critical)", r.level == "danger" and any(f.severity == "critical" for f in r.findings), f"{r.level} {r.score}")
         r = triage([D("clamav", "Win.Ransomware.Lockbit-9876543-0", fake), D("defender", "Trojan:Win32/Wacatac.B!ml", fake)])[0]
-        check("T5 ClamAV família + Defender no MESMO arquivo => Perigoso (critical)", r.level == "danger" and any(f.severity == "critical" for f in r.findings), f"{r.level} {r.score}")
+        check("T5b ClamAV família + Defender GENÉRICO (caso de trainer/mod) => só Atenção, nunca Perigoso", r.level == "caution" and not any(f.severity == "critical" for f in r.findings), f"{r.level} {r.score}")
+        r = triage([D("clamav", "Win.Tool.CheatEngine-9876543-0", fake), D("defender", "HackTool:Win32/Cheatengine", fake)])[0]
+        check("T5c Cheat Engine detectado por Defender (HackTool) + ClamAV => Atenção, não Perigoso", r.level != "danger", f"{r.level} {r.score}")
         r = triage([D("defender", "Virus:DOS/EICAR_Test_File", fake)])[0]
         check("T6 arquivo de teste EICAR => Atenção explicando que é teste", r.level == "caution" and any("TESTE" in f.detail for f in r.findings))
         r = triage([D("defender", "Trojan:Win32/Lumma.GG!MTB", fake)], {})[0]
@@ -64,6 +70,9 @@ def run_round8(ctx) -> None:
         check("T7 'Confiar' por SHA-256 silencia a detecção", r2.level == "ok" and r2.status == "user", f"{r2.level} {r2.status}")
         r = triage([D("defender", "Bloqueado pelo antivírus em tempo real", fake)])[0]
         check("T8 arquivo bloqueado em tempo real (nome desconhecido) => Perigoso (high 45)", r.level == "danger", f"{r.level} {r.score}")
+        gone = str(tmp / "removido.exe")
+        r = triage([D("defender", "Trojan:Win32/Lumma.GG!MTB", gone)])[0]
+        check("T8b ameaça cujo arquivo já NÃO existe (Defender removeu) => Atenção 'já contida', não 'Perigoso'", r.level == "caution" and "contida" in r.findings[0].title, f"{r.level} {r.score} {r.findings[0].title}")
         dets = [D("defender", "Trojan:Win32/Wacatac.B!ml", fake), D("defender", "Trojan:Win32/Wacatac.B!ml", fake.upper())]
         check("T9 mesmo arquivo com caminho em maiúsculas é agrupado", len(triage(dets)) == 1)
         notepad = str(SYS32 / "notepad.exe")

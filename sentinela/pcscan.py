@@ -190,9 +190,18 @@ def triage_persistence(items: list[PItem], sigs: dict, trusted: dict | None = No
         p.sig = sigs.get(path)
         return ps.sig_state(p), p
 
+    def in_system(t: str) -> bool:
+        n = ps.norm_path(t)
+        return n.startswith(ps._WIN + chr(92)) or any(pf and n.startswith(pf + chr(92)) for pf in ps._PF)
+
     for it in items:
         fs: list[Finding] = []
         worst_unsigned = None
+        remote = [t for t in it.targets if ps.path_kind(t) in ("remote", "removable")]
+        if remote:
+            # NUNCA abre o arquivo (evita SMB/NTLM e travamento): o achado é a origem
+            fs.append(Finding("persist", f"{it.kind} executa a partir da rede ou de mídia removível", f"{it.where}: {ps.clean_text(remote[0], 200)}. O arquivo não foi aberto.", 25, "medium"))
+            it.targets = [t for t in it.targets if t not in remote]
         for t in it.targets:
             if not os.path.isfile(t):
                 continue
@@ -201,7 +210,7 @@ def triage_persistence(items: list[PItem], sigs: dict, trusted: dict | None = No
                 continue
             if st in ("unsigned", "invalid"):
                 worst_unsigned = worst_unsigned or t
-        loc = lambda t: ps.is_risky_dir(t) or ps.is_user_dir(t)
+        loc = lambda t: ps.is_risky_dir(t) or ps.is_user_dir(t) or not in_system(t)
         risky = [t for t in it.targets if os.path.isfile(t) and loc(t) and state_of(t)[0] in ("unsigned", "invalid")]
         mh = re.match(r'^\s*"?([^"\s]+)', it.command or "")
         lol = bool(mh) and os.path.basename(mh.group(1)).lower().split(".")[0] in LOLBINS
@@ -285,6 +294,10 @@ def hygiene(cancelled=lambda: False) -> tuple[list[Finding], list[Finding], list
     if not fw:
         gaps.append(gap("Estado do firewall não pôde ser lido"))
     off = [ps.clean_text(d.get("n", "?"), 20) for d in fw if d.get("e") is False]
+    other_av = [n for n, on in antivirus_products(cancelled) if on and "defender" not in n.lower()]
+    if off and other_av:
+        notes.append("Firewall do Windows desligado, mas há outro antivírus ativo (" + ", ".join(other_av) + ") que pode estar fazendo esse papel.")
+        off = []
     if off:
         fs.append(Finding("hygiene", f"Firewall do Windows desligado em: {', '.join(off)}", "Sem firewall, serviços do PC ficam expostos à rede. Reative em Segurança do Windows.", 20, "medium"))
     pol = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -363,25 +376,34 @@ def triage_detections(dets: list, trusted: dict | None = None, vt: VirusTotal | 
             it.score, it.level = 0, "ok"
             continue
         ms_signed = st == "ms"
-        both = "defender" in by_engine and "clamav" in by_engine
+        # "ambos concordam" exige FAMÍLIA nos dois motores (genérico + família é o caso típico de trainer/mod legítimo)
+        def_family = any(se.classify_name("defender", d.name) == "family" and not d.name.startswith("Bloqueado") for d in by_engine.get("defender", []))
+        clam_family = any(se.classify_name("clamav", d.name) == "family" for d in by_engine.get("clamav", []))
+        both = def_family and clam_family
         for engine, ds in by_engine.items():
             for d in ds:
                 kind = se.classify_name(engine, d.name)
                 label = ("Defender" if engine == "defender" else "ClamAV") + f": {d.name}"
-                if kind == "test":
+                if d.name.startswith("Bloqueado pelo antivírus"):
+                    if ms_signed:
+                        continue
+                    fs.append(Finding("scan", label, "O antivírus em tempo real barrou a abertura deste arquivo (veja o nome da ameaça no histórico do Defender).", 45, "high"))
+                elif kind == "test":
                     fs.append(Finding("scan", label, "Arquivo de TESTE de antivírus (EICAR ou similar): não é malware real, mas prova que o antivírus está funcionando.", 30, "medium"))
                 elif ms_signed:
                     fs.append(Finding("scan", label + " (arquivo assinado pela Microsoft)", "Detecção em arquivo assinado pela Microsoft: provável falso positivo.", 0, "info"))
                 elif kind == "family" and engine == "defender":
                     fs.append(Finding("scan", label, "O Defender identificou uma família de malware pelo nome. Não abra o arquivo; analise-o no Sentinela ou mova para a quarentena.", 60, "high"))
                 elif kind == "family" and engine == "clamav":
-                    pts = 85 if both else 30
-                    fs.append(Finding("scan", label, "O ClamAV identificou uma família" + (" e o Defender concordou neste mesmo arquivo." if both else ", mas só ele. O ClamAV tem muitos falsos positivos em mods e trainers: confira a origem."), pts, "critical" if both else "medium"))
-                elif d.name.startswith("Bloqueado pelo antivírus"):
-                    fs.append(Finding("scan", label, "O antivírus em tempo real barrou a abertura deste arquivo (veja o nome da ameaça no histórico do Defender).", 45, "high"))
+                    pts = 85 if both else 25   # 25 + um genérico do Defender (15) = 40: ainda só Atenção
+                    fs.append(Finding("scan", label, "O ClamAV identificou uma família" + (" e o Defender também (família) neste mesmo arquivo." if both else ", mas só ele. O ClamAV tem muitos falsos positivos em mods e trainers: confira a origem."), pts, "critical" if both else "medium"))
                 else:
                     fs.append(Finding("scan", label + " (detecção genérica)", "Detecção heurística/PUA de um único motor: comum em trainers, cracks e mods legítimos. Confira a origem.", 15 if engine == "defender" else 5,
                                       "medium" if engine == "defender" else "low"))
+        if not it.exists and any(f.points > 0 for f in fs):
+            # o arquivo já não existe: o Defender provavelmente já removeu/contou a ameaça (evento 1117). Vale um aviso, não um alarme.
+            names = ", ".join(sorted({d.name for d in it.detections if not d.name.startswith("Bloqueado")}))[:160] or "ameaça detectada"
+            fs = [Finding("scan", f"Ameaça já contida: {names}", "O arquivo não existe mais (o Defender provavelmente já o removeu ou isolou). Confira o histórico de proteção do Windows.", 20, "medium")]
         if st in ("signed", "packaged") and fs:
             fs.append(Finding("scan", "O arquivo tem assinatura digital válida", ps.publisher_of(p), -10, "info", trust=True))
         if vt and it.sha256 and st in ("unsigned", "invalid", "failed") and vt_budget > 0 and not cancelled():
@@ -419,7 +441,9 @@ class PcReport:
 
 
 def pc_verdict(items: list, persist: list, hyg: list, procs, gaps: list) -> Verdict:
-    levels = [i.level for i in items] + [p.level for p in persist] + [ps.level_of(hyg)[1]] + ([procs.verdict.level] if procs is not None and procs.verdict.level in ("danger", "caution") else [])
+    hyg_level = ps.level_of(hyg)[1]
+    hyg_level = "caution" if hyg_level == "danger" else hyg_level   # configuração insegura NÃO é prova de malware: no máximo Atenção
+    levels = [i.level for i in items] + [p.level for p in persist] + [hyg_level] + ([procs.verdict.level] if procs is not None and procs.verdict.level in ("danger", "caution") else [])
     score = max([i.score for i in items] + [p.score for p in persist] + [compute_score(hyg)] + ([procs.verdict.score] if procs is not None else []) + [0])
     if "danger" in levels:
         return Verdict(score, "danger", "Perigoso", "Há sinais fortes de malware (veja os achados). Não abra os arquivos apontados; analise-os no Sentinela ou mova-os para a quarentena.")
@@ -477,7 +501,7 @@ def run_pc_scan(settings, mode: str, vt: VirusTotal | None = None, allow_clam_up
     step(3, "Auditando o que inicia com o Windows…")
     pitems, pnotes = audit_persistence(cancelled)
     notes += pnotes
-    tgt = sorted({t for it in pitems for t in it.targets if os.path.isfile(t)})
+    tgt = sorted({t for it in pitems for t in it.targets if ps.path_kind(t) == "local" and os.path.isfile(t)})
     sigs = verify_signatures(tgt, cancelled) if tgt else {}
     triage_persistence(pitems, sigs, trusted)
     persist_flagged = [p for p in pitems if p.score > 0 or p.level != "ok"]
@@ -501,32 +525,35 @@ def run_pc_scan(settings, mode: str, vt: VirusTotal | None = None, allow_clam_up
             gaps.append(gap("ClamAV não está instalado e verificado: sem 2ª opinião de antivírus", "Instale pela aba Componentes."))
             engines["clamav"] = "ausente"
         else:
-            has_db, age = se.clam_db_state()
+            se.clam_cleanup_tmp()      # sobras de uma atualização interrompida (nenhuma atualização está rodando agora)
+            has_db, age, why_db = se.clam_db_state()
             with comp.PinnedRun(st, ccomp) as run:
                 if (not has_db or age > 7) and allow_clam_update:
                     ok, msg = se.clam_update(run, lambda m: step(5, m), cancelled)
                     if not ok:
-                        gaps.append(gap("As assinaturas do ClamAV não puderam ser atualizadas"))
-                    has_db, age = se.clam_db_state()
+                        gaps.append(gap("As assinaturas do ClamAV não puderam ser atualizadas", msg))
+                    has_db, age, why_db = se.clam_db_state()
                 if not has_db:
-                    gaps.append(gap("ClamAV sem base de assinaturas", "Autorize o download na tela da verificação (cerca de 300 MB)."))
-                    engines["clamav"] = "sem base de assinaturas"
+                    gaps.append(gap("ClamAV sem base de assinaturas íntegra", why_db + (". Autorize o download na tela da verificação (cerca de 300 MB)." if not allow_clam_update else "")))
+                    engines["clamav"] = "sem base de assinaturas íntegra"
                 else:
                     if age > 7:
                         gaps.append(gap(f"Base do ClamAV com {int(age)} dias"))
                     zones = se.hot_zones(mode, extra_zones)
                     skip = (str(comp.COMP_DIR), str(se.CLAM_DB), str(comp.RUN_DIR))
                     zr = se.enumerate_zone(zones, 200000 if mode == "full" else 20000, None if mode == "full" else 30, skip, cancelled)
-                    files = list(dict.fromkeys(zr.files + tgt + run_exes))
+                    files = list(dict.fromkeys(zr.files + tgt + [e for e in run_exes if ps.path_kind(e) == "local"]))
                     cd, n, errs = se.clam_scan(run, files, None, lambda m: step(5, m), cancelled)
                     dets += cd
-                    engines["clamav"] = f"{n} arquivos varridos"
+                    engines["clamav"] = f"{n} de {len(files)} arquivos varridos" + (f" ({len(files) - n} não verificados)" if n < len(files) else "")
                     for e in errs:
                         gaps.append(gap("O ClamAV não concluiu parte da varredura", e))
                     if zr.skipped_cloud:
                         gaps.append(gap(f"{zr.skipped_cloud} arquivo(s) só na nuvem não foram abertos (para não baixá-los)"))
                     if zr.skipped_big:
-                        limits.append(f"{zr.skipped_big} arquivo(s) maiores que 200 MB foram pulados.")
+                        limits.append(f"{zr.skipped_big} arquivo(s) maiores que 100 MB foram pulados pelo ClamAV.")
+                    if mode == "quick":
+                        limits.append("A verificação Rápida só olha, nas pastas de risco, arquivos modificados nos últimos 30 dias (e os alvos de inicialização e programas em execução); malware antigo fica para a Completa.")
                     if zr.skipped_nonlocal:
                         gaps.append(gap(f"{zr.skipped_nonlocal} pasta(s) em unidade de rede/removível não foram verificadas"))
                     if zr.truncated:

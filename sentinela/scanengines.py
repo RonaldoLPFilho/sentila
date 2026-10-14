@@ -78,6 +78,8 @@ def run_limited(cmd: list[str], timeout: float, cancelled=lambda: False, cwd: st
                                 creationflags=CREATE_NO_WINDOW | (BELOW_NORMAL if low_priority else 0))
     except OSError as e:
         tmp.close()
+        if job:
+            _k32.CloseHandle(job)
         return RunResult(None, f"não foi possível executar: {e.__class__.__name__}")
     if job:
         _k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle)))
@@ -178,7 +180,8 @@ def defender_events(since_utc_iso: str, cancelled=lambda: False) -> list[Detecti
         name = ps.clean_text(d.get("name") or "", 120)
         path = str(d.get("path") or "")
         path = path.split("file:_")[-1] if "file:_" in path else path
-        path = path.split("->")[0].strip()
+        path = path.split("->")[0].split("|")[0].strip()
+        path = ps.clean_text(path, 400)
         if not name or (name, path) in seen:
             continue
         seen.add((name, path))
@@ -229,18 +232,42 @@ def defender_scan(kind: int, status=lambda m: None, cancelled=lambda: False, tim
 CLAM_ARGS = ["--infected", "--no-summary", "--max-filesize=100M", "--max-scansize=200M", "--max-files=1000", "--max-recursion=8", "--max-dir-recursion=15"]
 
 
-def clam_db_state() -> tuple[bool, float]:
-    """(base existe?, idade em dias do arquivo mais novo)."""
-    files = [p for p in CLAM_DB.glob("*.c[vl]d")] if CLAM_DB.is_dir() else []
-    if not any(p.name.lower().startswith(("daily", "main")) for p in files):
-        return False, 0.0
-    return True, (time.time() - max(p.stat().st_mtime for p in files)) / 86400
+DB_ALLOWED = re.compile(r"^(main|daily|bytecode)(-\d+)?\.(cvd|cld|cvd\.sign|cld\.sign)$|^freshclam\.dat$", re.I)
+
+
+def clam_db_state() -> tuple[bool, float, str]:
+    """(base COMPLETA e íntegra?, idade em dias, motivo). Exige main + daily + bytecode, sem tmp.* pendente e sem arquivo estranho."""
+    if not CLAM_DB.is_dir():
+        return False, 0.0, "sem base de assinaturas"
+    names = {p.name.lower(): p for p in CLAM_DB.iterdir()}
+    have = {k: next((n for n in names if n.startswith(k + ".c") and n.endswith(("cvd", "cld"))), None) for k in ("main", "daily", "bytecode")}
+    missing = [k for k, v in have.items() if not v]
+    if missing:
+        return False, 0.0, "base incompleta (faltam: " + ", ".join(missing) + ")"
+    extra = [n for n in names if not DB_ALLOWED.match(n) and not (names[n].is_dir() and n.startswith("tmp."))]
+    if extra:
+        return False, 0.0, "a pasta da base tem arquivo(s) que não são do ClamAV oficial (ex.: " + ps.clean_text(extra[0], 60) + ")"
+    if any(n.startswith("tmp.") and names[n].is_dir() for n in names):
+        return False, 0.0, "atualização de assinaturas interrompida (arquivos temporários pendentes)"
+    age = (time.time() - max(names[v].stat().st_mtime for v in have.values())) / 86400
+    return True, age, "ok"
+
+
+def clam_cleanup_tmp() -> None:
+    import shutil
+    try:
+        for p in CLAM_DB.iterdir():
+            if p.is_dir() and p.name.lower().startswith("tmp."):
+                shutil.rmtree(p, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def clam_update(run: comp.PinnedRun, status=lambda m: None, cancelled=lambda: False) -> tuple[bool, str]:
     """freshclam com config gerada pelo app: sem DatabaseCustomURL, sem proxy herdado, destino fixo. Resultado só por código de saída."""
     CLAM_DB.mkdir(parents=True, exist_ok=True)
-    conf = Path(run.dir) / "freshclam.conf"
+    (Path(run.dir) / ".work").mkdir(exist_ok=True)
+    conf = Path(run.dir) / ".work" / "freshclam.conf"
     conf.write_text(f"DatabaseDirectory {CLAM_DB}\nDatabaseMirror database.clamav.net\nConnectTimeout 30\nReceiveTimeout 120\nMaxAttempts 3\n"
                     "Checks 1\nScriptedUpdates yes\nLogVerbose no\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
@@ -249,8 +276,10 @@ def clam_update(run: comp.PinnedRun, status=lambda m: None, cancelled=lambda: Fa
                     lambda: (status(f"Baixando as assinaturas do ClamAV… {int(time.time() - t0)} s"), cancelled())[1], cwd=str(run.dir), env=env)
     if r.cancelled:
         raise InterruptedError
-    ok = r.code == 0
-    return ok, "assinaturas do ClamAV atualizadas" if ok else f"não foi possível atualizar as assinaturas do ClamAV (código {r.code})"
+    clam_cleanup_tmp()
+    full, _age, why = clam_db_state()
+    ok = r.code == 0 and full
+    return ok, "assinaturas do ClamAV atualizadas" if ok else f"não foi possível atualizar as assinaturas do ClamAV (código {r.code}; {why})"
 
 
 _CLAM_BLOCKED = re.compile(r"Can't open file (.+?): (\d+)\s*$", re.M)
@@ -266,44 +295,75 @@ def parse_clam_output(out: str, limit: int = 2000) -> list[Detection]:
     return res
 
 
+_WARN_OPEN = re.compile(r"^WARNING: Can't open file (.+?): (.+?)\s*$", re.M)
+
+
 def clam_scan(run: comp.PinnedRun, files: list[str], db_dir: Path | None = None, status=lambda m: None, cancelled=lambda: False,
               batch: int = 3000, per_batch_timeout: float = 2400) -> tuple[list[Detection], int, list[str]]:
-    """Varre `files` em lotes. Devolve (detecções, nº de arquivos varridos, erros). Exit 0/1 = ok; 2 = erro do lote (vira lacuna)."""
+    """Varre `files` em lotes. Devolve (detecções, nº de arquivos REALMENTE varridos, avisos/erros que viram lacunas).
+    Lote com tempo excedido, saída truncada ou erro NÃO conta como varrido; arquivo que o ClamAV não conseguiu abrir (exceto bloqueio do
+    antivírus 225/226, que é uma detecção) é contado à parte. Só assinaturas oficiais (--official-db-only) e só base íntegra."""
     db = db_dir or CLAM_DB
     dets: list[Detection] = []
     errors: list[str] = []
     done = 0
+    unreadable: list[str] = []
     for i in range(0, len(files), batch):
         part = files[i:i + batch]
-        lst = Path(run.dir) / f"lista_{i}.txt"
+        if db_dir is None:
+            ok, _age, why = clam_db_state()
+            if not ok:
+                errors.append("a base de assinaturas não está íntegra: " + why)
+                break
+        okn, msg = run.verify_names()
+        if not okn:
+            errors.append("o componente ClamAV mudou durante a varredura: " + msg)
+            break
+        work = Path(run.dir) / ".work"
+        work.mkdir(exist_ok=True)
+        lst = work / f"lista_{i}.txt"
         lst.write_text("\n".join(part), encoding="utf-8")
         status(f"ClamAV: {done}/{len(files)} arquivos…")
-        r = run_limited([run.exe("clamscan.exe"), f"--database={db}", f"--file-list={lst}", *CLAM_ARGS], per_batch_timeout, cancelled, cwd=str(run.dir))
-        if r.cancelled:
-            raise InterruptedError
-        blocked = _CLAM_BLOCKED.findall(r.out)
-        other_err = [ln for ln in r.out.splitlines() if ln.strip() and "Can't open file" not in ln and not ln.endswith("FOUND") and "LibClamAV Warning" not in ln
-                     and not ln.startswith("WARNING") and "[saída truncada]" not in ln]
-        if r.code in (0, 1) or (r.code == 2 and blocked and not other_err and not r.timed_out):
-            dets += parse_clam_output(r.out)
-            done += len(part)
-            for path, code in blocked:       # 225/226: o antivírus em tempo real barrou a abertura (já registrou a detecção no log)
-                if code in ("225", "226"):
-                    dets.append(Detection("defender", "Bloqueado pelo antivírus em tempo real", path.strip()))
-        else:
-            errors.append(f"lote {i // batch + 1}: " + ("tempo excedido" if r.timed_out else f"código {r.code}: " + ps.clean_text(" ".join(r.out.split())[-200:], 200)))
+        args = [run.exe("clamscan.exe"), f"--database={db}", f"--file-list={lst}", *CLAM_ARGS]
+        if db_dir is None:
+            args.append("--official-db-only=yes")
+        r = run_limited(args, per_batch_timeout, cancelled, cwd=str(run.dir))
         try:
             lst.unlink()
         except OSError:
             pass
+        if r.cancelled:
+            raise InterruptedError
+        n = i // batch + 1
+        if r.timed_out:
+            errors.append(f"lote {n}: tempo excedido (não contado como varrido)")
+            continue
+        if r.truncated:
+            errors.append(f"lote {n}: saída grande demais (não contado como varrido)")
+            continue
+        blocked = {m.group(1).strip() for m in _CLAM_BLOCKED.finditer(r.out) if m.group(2) in ("225", "226")}
+        unread = [m.group(1).strip() for m in _WARN_OPEN.finditer(r.out) if m.group(1).strip() not in blocked]
+        other = [ln for ln in r.out.splitlines() if ln.strip() and "Can't open file" not in ln and not ln.endswith("FOUND") and "LibClamAV Warning" not in ln
+                 and not ln.startswith("WARNING")]
+        if r.code not in (0, 1, 2) or (r.code == 2 and other):
+            errors.append(f"lote {n}: código {r.code}: " + ps.clean_text(" ".join((other or [r.out])[-1:]), 200))
+            continue
+        dets += parse_clam_output(r.out)
+        for path in blocked:     # 225/226: o antivírus em tempo real barrou a abertura (já registrou a detecção no log)
+            dets.append(Detection("defender", "Bloqueado pelo antivírus em tempo real", ps.clean_text(path, 400)))
+        unreadable += unread
+        done += max(0, len(part) - len(unread) - len(blocked))
+    if unreadable:
+        errors.append(f"{len(unreadable)} arquivo(s) não puderam ser abertos pelo ClamAV (ex.: {ps.clean_text(unreadable[0], 120)})")
     return dets, done, errors
 
 
 # ---------------------------------------------------------------- zonas de risco
 
-EXEC_EXT = {".exe", ".dll", ".sys", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk", ".msi", ".jar", ".py", ".com", ".cpl", ".pif"}
+EXEC_EXT = {".exe", ".dll", ".sys", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk", ".msi", ".jar", ".py", ".com", ".cpl", ".pif",
+            ".zip", ".7z", ".rar", ".iso", ".vhd", ".vhdx", ".docm", ".xlsm", ".pptm", ".reg", ".url", ".chm", ".msix", ".appx"}
 ATTR_REPARSE, ATTR_OFFLINE, ATTR_RECALL_OPEN, ATTR_RECALL_DATA = 0x400, 0x1000, 0x40000, 0x400000
-MAX_FILE = 200 << 20
+MAX_FILE = 100 << 20     # igual ao --max-filesize do ClamAV (o que passa disso é declarado como pulado)
 
 
 @dataclass
