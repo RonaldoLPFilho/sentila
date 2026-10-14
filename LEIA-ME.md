@@ -67,12 +67,39 @@ Analisa jogos, mods e arquivos baixados **antes** de você abrir, com poucos fal
 - Consulta ao VirusTotal: até 12 binários internos por análise (cota gratuita de 4/min); o restante vira *Não verificado*.
 - O Windows Sandbox real não pôde ser validado de ponta a ponta no desenvolvimento (recurso desativado): o agente e o fluxo foram testados no próprio PC em modo de teste.
 
+## Verificar processos em execução (aba "Processos")
+
+Olha o que **já está rodando** no PC (sem precisar de administrador) e responde: há programa suspeito? algo gasta CPU/GPU sem motivo? há mineração? há indícios de botnet?
+
+1. **Lista** os processos e confere a **assinatura digital** de cada programa (apps empacotados do Windows contam como verificados).
+2. Para os **sem assinatura**, consulta a reputação no VirusTotal (só o hash; opcional, máx. 12 por verificação).
+3. **Observa** CPU, GPU e conexões de rede por 30/60/120 s (recomendado 60 s: menos que isso não avalia consumo contínuo).
+4. Pondera os sinais e mostra **Pontos de atenção**, **Não verificado**, **Maiores consumidores** e a lista completa. Nada é encerrado sozinho.
+
+**O que acusa** (sempre com o motivo na tela):
+- Programas que fingem ser do Windows (svchost/lsass… fora de System32, nome com letras parecidas ou invisíveis, pai errado).
+- Executável apagado enquanto roda, rodando de pasta de rede, assinatura adulterada, arquivo reescrito durante a observação.
+- Linha de comando perigosa (PowerShell codificado ou baixando e executando conteúdo, apagar cópias de segurança, desativar o Defender…).
+- **Mineradores**: nome conhecido, parâmetros `stratum`/carteira, conexão com pool (DNS atribuído ao processo) e, só como reforço, uso contínuo de CPU/GPU por programa sem assinatura.
+- Rede: varredura de outros PCs (muitas conexões sem resposta para redes diferentes nas portas 22/23/445/3389), portas de IRC/Tor, programa sem assinatura escutando conexões.
+- Programas que se registram para **iniciar com o Windows** (Run, serviço, tarefa agendada, pasta Inicializar).
+- Estado do Defender (tempo real desligado, assinaturas velhas, exclusões quando legíveis) e arquivo `hosts` bloqueando antivírus/atualizações.
+
+**Como evita falso positivo:** um programa sem assinatura numa pasta de risco (Downloads, Temp…) **sozinho é só informação**; precisa de um segundo sinal (conexão externa sem janela, inicia com o Windows, comando suspeito…). Consumo alto de programa **assinado** (jogo, navegador, render) nunca pontua; só aparece em "Maiores consumidores". Se você instalou um programa sem assinatura de propósito, use **Confiar** (vale pelo SHA-256: se o arquivo mudar, deixa de valer; dá para revogar).
+
+**O resultado nunca diz "PC limpo".** O melhor resultado é **"Sem indícios (parcial)"**; se algum programa ficou sem verificação, é **Inconclusivo** e a lista mostra quais.
+
+**Limites (leia):** não vê rootkits de kernel, malware que só vive na memória (a assinatura vale para o arquivo, não para a imagem carregada), DLL maliciosa dentro de programa assinado, mineração dentro do navegador, mineradores que dormem ou limitam o uso, nem beacons lentos de botnet. Sem administrador, a linha de comando de processos elevados e as **exclusões do Defender** não podem ser lidas (aparecem em "Não verificado"). "Botnet" é sempre *indício*, nunca prova. Encerrar um processo **não remove** o arquivo nem a inicialização automática.
+
+**Ações por processo:** mostrar pasta, analisar o arquivo no Sentinela, confiar, **suspender** (reversível) e **encerrar** (com confirmação; recusa processos do sistema, do Windows e o próprio app; antivírus/anticheat geram aviso). A identidade (hora de criação + caminho) é conferida no mesmo handle antes de agir, para nunca atingir outro programa que reutilizou o número do processo. O relatório salvo esconde por padrão seu nome de usuário e segredos de linhas de comando.
+
 ## Testes
 
 ```
-python tests\run_regression.py
+python tests\run_regression.py     (cenários inertes: arquivos + verificação de processos)
+python tests\live_procs.py         (lança cópias inofensivas com nomes suspeitos e confere a varredura real; ~1 min)
 ```
-Executa 35 cenários inertes derivados da auditoria (evasões, falsos positivos, relatório de sandbox forjado…).
+Executa cenários inertes derivados da auditoria (evasões, falsos positivos, relatório de sandbox forjado, processos impostores, mineração, rede…).
 
 ## Estrutura
 
@@ -83,6 +110,8 @@ sentinela/
   checks.py    hash, VirusTotal, Defender, assinatura, extração, heurísticas por tipo de arquivo
   scoring.py   pontuação, lacunas, veredito e regras/saneamento do relatório do sandbox
   sandbox.py   gera o .wsb, inicia, acompanha e coleta (leituras limitadas)
+  procscan.py  verificação de processos em execução (coleta, regras, amostragem, ações)
+  ui_procs.py  tela "Processos"
   agent.ps1    roda DENTRO do sandbox e observa o comportamento
 tests/         regressão
 installer/     gera o instalador (python installer\build.py)

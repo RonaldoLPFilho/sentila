@@ -41,10 +41,14 @@ class Settings:
         "sandbox_network": False,
         "sandbox_seconds": 60,
         "sandbox_protected": False,
+        "proc_seconds": 60,        # janela de observação da verificação de processos
+        "proc_vt": True,           # consultar o VirusTotal (só hash) para programas sem assinatura
+        "proc_ignore": [],         # [{"sha256", "name", "motivo"}] programas em que o usuário confia
+        "proc_suspended": [],      # [{"pid", "create_time", "name", "exe"}] processos que o app suspendeu
     }
 
     def __init__(self) -> None:
-        self.data = dict(self.DEFAULTS)
+        self.data = {k: (list(v) if isinstance(v, list) else v) for k, v in self.DEFAULTS.items()}
         try:
             self.data.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except (OSError, ValueError):

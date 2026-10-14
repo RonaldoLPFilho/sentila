@@ -260,6 +260,15 @@ def run() -> None:
     run_round3(types.SimpleNamespace(TMP=TMP, SEVEN=SEVEN, notepad=notepad, DESTRUCTIVE=DESTRUCTIVE, mkpe=mkpe, mkzip=mkzip,
                                      analyze=analyze, scenario=scenario, check=check, FakeVT=FakeVT, checks=checks))
 
+    from round4 import run_round4
+    run_round4(types.SimpleNamespace(check=check))
+
+    from round5 import run_round5
+    run_round5(types.SimpleNamespace(check=check))
+
+    from round6 import run_round6
+    run_round6(types.SimpleNamespace(check=check))
+
     # av_blocked só para 225/226
     check("M2 FileNotFoundError não é 'bloqueado pelo antivírus'", not checks.av_blocked(FileNotFoundError(2, "x")))
     e = OSError(22, "Invalid argument")

@@ -58,6 +58,10 @@ QPushButton#danger {{ background: transparent; border: 1px solid {RED}; color: {
 QPushButton#danger:hover {{ background: rgba(248,113,113,0.12); }}
 QPushButton#ghost {{ background: transparent; border: none; color: {MUTED}; }}
 QPushButton#ghost:hover {{ color: {TEXT}; }}
+QPushButton#nav {{ background: transparent; border: none; border-radius: 8px; color: {MUTED}; padding: 7px 16px; font-weight: 600; }}
+QPushButton#nav:hover {{ color: {TEXT}; background: {SURFACE2}; }}
+QPushButton#nav:checked {{ color: {TEXT}; background: {SURFACE2}; border: 1px solid {BORDER}; }}
+QPushButton#nav:disabled {{ color: {MUTED}; background: transparent; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 30px; }}
@@ -473,6 +477,7 @@ class SettingsDialog(QDialog):
 class TopBar(QFrame):
     """Barra fixa no topo de TODAS as telas: identidade do app, versão e configurações."""
     openSettings = Signal()
+    navigate = Signal(str)  # "files" | "procs"
 
     def __init__(self) -> None:
         super().__init__()
@@ -492,13 +497,33 @@ class TopBar(QFrame):
         self.version.setStyleSheet(f"color: {ACCENT}; background: rgba(108,140,255,0.14); border: 1px solid rgba(108,140,255,0.35);"
                                    "border-radius: 11px; padding: 0 10px; font-size: 12px; font-weight: 600;")
         h.addWidget(self.version, 0, Qt.AlignVCenter)
-        h.addWidget(lbl("Analise antes de abrir", 12, 400, MUTED))
+        h.addSpacing(18)
+        self.nav: dict[str, QPushButton] = {}
+        for key, text in (("files", "Arquivos"), ("procs", "Processos")):
+            b = QPushButton(text)
+            b.setObjectName("nav")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.navigate.emit(k))
+            self.nav[key] = b
+            h.addWidget(b)
+        self.set_section("files")
         h.addStretch()
         self.gear = QPushButton("Configurações")
         self.gear.setObjectName("ghost")
         self.gear.setCursor(Qt.PointingHandCursor)
         self.gear.clicked.connect(self.openSettings)
         h.addWidget(self.gear)
+
+    def set_section(self, key: str) -> None:
+        for k, b in self.nav.items():
+            b.setChecked(k == key)
+
+    def set_busy(self, busy: bool) -> None:
+        """Durante uma análise não se troca de aba nem se abre Configurações."""
+        self.gear.setEnabled(not busy)
+        for b in self.nav.values():
+            b.setEnabled(not busy)
 
 
 class HomePage(QWidget):
@@ -910,8 +935,12 @@ class MainWindow(QMainWindow):
         self._stage = "idle"
 
         self.stack = QStackedWidget()
+        from .ui_procs import ProcessPage  # import tardio: ui_procs usa widgets deste módulo
         self.home, self.progress, self.result = HomePage(), ProgressPage(), ResultPage()
-        for w in (self.home, self.progress, self.result):
+        self.procs = ProcessPage(self.settings)
+        self._procs_busy = False
+        self._files_widget: QWidget = self.home
+        for w in (self.home, self.progress, self.result, self.procs):
             self.stack.addWidget(w)
         self.topbar = TopBar()
         central = QWidget()
@@ -922,8 +951,11 @@ class MainWindow(QMainWindow):
         col.addWidget(self.topbar)
         col.addWidget(self.stack, 1)
         self.setCentralWidget(central)
-        # configurações só quando não há análise em andamento
-        self.stack.currentChanged.connect(lambda _i: self.topbar.gear.setEnabled(self.stack.currentWidget() is not self.progress))
+        # configurações e troca de aba só quando não há análise em andamento
+        self.stack.currentChanged.connect(self._sync_chrome)
+        self.procs.busyChanged.connect(self._on_procs_busy)
+        self.topbar.navigate.connect(self.navigate)
+        self.procs.analyzeFile.connect(self._analyze_from_procs)
 
         self.home.drop.fileDropped.connect(self.start_analysis)
         self.topbar.openSettings.connect(self.open_settings)
@@ -947,6 +979,30 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self).exec():
             self.home.refresh(self.settings)
+            self.procs.refresh()
+
+    def _sync_chrome(self, *_a) -> None:
+        cur = self.stack.currentWidget()
+        if cur is not self.procs:
+            self._files_widget = cur
+        self.topbar.set_busy(cur is self.progress or self._procs_busy)
+        self.topbar.set_section("procs" if cur is self.procs else "files")
+
+    def _on_procs_busy(self, busy: bool) -> None:
+        self._procs_busy = busy
+        self._sync_chrome()
+
+    def navigate(self, key: str) -> None:
+        if key == "procs":
+            self.procs.refresh()
+            self.stack.setCurrentWidget(self.procs)
+        else:
+            self.stack.setCurrentWidget(self._files_widget if self._files_widget is not self.progress else self.home)
+        self._sync_chrome()
+
+    def _analyze_from_procs(self, path: str) -> None:
+        self.stack.setCurrentWidget(self.home)
+        self.start_analysis(path)
 
     def _run(self, fn, on_done) -> None:
         w = Worker(fn)
@@ -979,7 +1035,7 @@ class MainWindow(QMainWindow):
 
     # ---- fluxo
     def start_analysis(self, path_str: str, force: bool = False) -> None:
-        if self.worker and self.worker.isRunning():
+        if (self.worker and self.worker.isRunning()) or self._procs_busy:
             return
         self.path = Path(path_str)
         self._force = force
@@ -1121,6 +1177,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e) -> None:
         self.analyzer.cancel()
+        self.procs._cancel = True
+        if self.procs.worker and self.procs.worker.isRunning():
+            self.procs.worker.wait(8000)
         if self.worker and self.worker.isRunning():
             self.worker.wait(8000)
         self.analyzer.cleanup()

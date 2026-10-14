@@ -404,6 +404,79 @@ def publisher(subject: str) -> str:
     return (m.group(2) or m.group(3)).strip() if m else "publicador desconhecido"
 
 
+_PS_SIG_EX = r"""
+$ErrorActionPreference='SilentlyContinue'
+[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$paths = $env:SENT_PATHS | ConvertFrom-Json
+$res = foreach ($p in $paths) {
+  $s = Get-AuthenticodeSignature -LiteralPath $p
+  $c = $s.SignerCertificate
+  [pscustomobject]@{ path=$p; status=[string]$s.Status; subject=[string]$c.Subject; issuer=[string]$c.Issuer; thumb=[string]$c.Thumbprint }
+}
+ConvertTo-Json -InputObject @($res) -Compress
+"""
+
+
+def run_powershell(script: str, env_extra: dict | None = None, timeout: float = 60, cancelled=lambda: False) -> str | None:
+    """Roda um script PowerShell sem janela. Devolve a saída, ou None se falhou/estourou o tempo/foi cancelado (nunca lança)."""
+    env = dict(os.environ, **(env_extra or {}))
+    try:
+        proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+    except OSError:
+        return None
+    deadline = time.time() + timeout
+    out = b""
+    while True:
+        try:
+            out, _ = proc.communicate(timeout=0.25)
+            return out.decode("utf-8", "replace")
+        except subprocess.TimeoutExpired:
+            if cancelled() or time.time() > deadline:
+                proc.kill()
+                proc.communicate()
+                return None
+
+
+def verify_signatures(paths: list[str], cancelled=lambda: False, batch: int = 40, timeout: float = 90) -> dict[str, dict]:
+    """Assinatura Authenticode em lotes. Distingue 'verificado' de 'a verificação falhou':
+    cada caminho recebe verified=True (status veio do Windows) ou verified=False/status 'CheckFailed' (lote que estourou o tempo)."""
+    out: dict[str, dict] = {}
+    for i in range(0, len(paths), batch):
+        part = paths[i:i + batch]
+        if cancelled():
+            raise InterruptedError
+        raw = run_powershell(_PS_SIG_EX, {"SENT_PATHS": json.dumps(part)}, timeout, cancelled)
+        data = None
+        if raw is not None:
+            try:
+                data = json.loads(raw or "[]")
+            except ValueError:
+                data = None
+        got = {d["path"]: d for d in data if isinstance(d, dict) and isinstance(d.get("path"), str)} if isinstance(data, list) else {}
+        if cancelled():
+            raise InterruptedError
+        for p in part:
+            d = got.get(p)
+            if d is None:
+                out[p] = {"path": p, "status": "CheckFailed", "subject": "", "issuer": "", "thumb": "", "verified": False}
+            else:
+                out[p] = {"path": p, "status": str(d.get("status") or ""), "subject": str(d.get("subject") or ""),
+                          "issuer": str(d.get("issuer") or ""), "thumb": str(d.get("thumb") or ""), "verified": True}
+    return out
+
+
+def dn_fields(dn: str) -> dict[str, str]:
+    """Campos de um Distinguished Name (CN, O, L, C…). Compare sempre vários campos, nunca só o CN."""
+    fields: dict[str, str] = {}
+    for m in re.finditer(r'(?:^|,\s*)([A-Za-z]+)=("(?:[^"]|"")*"|[^,]*)', dn or ""):
+        v = m.group(2).strip()
+        if v.startswith('"') and v.endswith('"'):
+            v = v[1:-1].replace('""', '"')
+        fields.setdefault(m.group(1).upper(), v)
+    return fields
+
+
 # ---------------------------------------------------------------- extração segura
 
 @dataclass
