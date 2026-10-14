@@ -22,6 +22,8 @@ from .scoring import Finding, Verdict, compute_score, gap
 
 _BS = chr(92)
 PATH_RX = re.compile(r'[A-Za-z]:' + _BS + _BS + r'[^"<>|\r\n,]{2,260}?\.(?:exe|dll|scr|com|bat|cmd|ps1|vbs|vbe|js|jse|hta|cpl|jar|msi|lnk)\b', re.I)
+# interpretadores comuns (powershell/cmd) rodando um script do próprio usuário são automação normal: não contam como LOLBin "forte"
+LOLBINS_STRONG = {"rundll32", "regsvr32", "mshta", "wscript", "cscript", "msiexec", "installutil", "regasm", "bitsadmin", "certutil"}
 LOLBINS = {"rundll32", "regsvr32", "mshta", "wscript", "cscript", "powershell", "pwsh", "cmd", "msiexec", "installutil", "regasm", "msbuild", "bitsadmin", "certutil"}
 
 
@@ -213,7 +215,7 @@ def triage_persistence(items: list[PItem], sigs: dict, trusted: dict | None = No
         loc = lambda t: ps.is_risky_dir(t) or ps.is_user_dir(t) or not in_system(t)
         risky = [t for t in it.targets if os.path.isfile(t) and loc(t) and state_of(t)[0] in ("unsigned", "invalid")]
         mh = re.match(r'^\s*"?([^"\s]+)', it.command or "")
-        lol = bool(mh) and os.path.basename(mh.group(1)).lower().split(".")[0] in LOLBINS
+        lol = bool(mh) and os.path.basename(mh.group(1)).lower().split(".")[0] in LOLBINS_STRONG
         cmd_f = ps.live_cmd_findings(it.command)
         fs += cmd_f
         if it.kind == "IFEO":

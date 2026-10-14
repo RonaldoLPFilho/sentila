@@ -113,6 +113,16 @@ def run_round9(ctx) -> None:
         pc.triage_persistence([it], {nk: {"status": "NotSigned", "verified": True, "subject": "", "issuer": "", "thumb": ""}})
         check("R1 programa sem assinatura em Documents/fora de Program Files inicia com o Windows => nota (não ignora)", it.score == 8, f"{it.level} {it.score}")
 
+        sc = tmp / "Scripts"
+        sc.mkdir()
+        scr = sc / "jogos.ps1"
+        scr.write_text("Write-Output ok")
+        ns = ps.norm_path(scr)
+        it = pc.PItem("Tarefa agendada", "Jogos", f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{scr}"')
+        it.targets = pc.targets_of(it.command)
+        pc.triage_persistence([it], {ns: {"status": "NotSigned", "verified": True, "subject": "", "issuer": "", "thumb": ""}})
+        check("R2 tarefa do usuário rodando powershell -File script próprio (automação) => NÃO é Atenção", it.level == "ok", f"{it.level} {it.score}")
+
         # ---------------- B4: higiene não vira Perigoso
         from sentinela.scoring import Finding
         hyg = [Finding("hygiene", "Firewall desligado", "", 20, "medium"), Finding("hygiene", "UAC desligado", "", 25, "medium")]

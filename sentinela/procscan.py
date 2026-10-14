@@ -937,7 +937,7 @@ def sample_behavior(procs: list[Proc], seconds: int, status=lambda m: None, canc
             except (psutil.Error, OSError):
                 conns = []
             for c in conns:
-                if not c.pid or alive.get(c.pid) != pid_key.get(c.pid):
+                if not c.pid or c.pid not in alive or alive[c.pid] != pid_key.get(c.pid):
                     continue
                 p = index.get(alive[c.pid])
                 if p is None:

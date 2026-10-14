@@ -362,7 +362,11 @@ class PinnedRun:
             _k32.CloseHandle(ctypes.c_void_p(h))
         self._handles.clear()
         if self.dir:
-            shutil.rmtree(self.dir, ignore_errors=True)
+            for _ in range(8):          # o processo recém-encerrado pode levar um instante para soltar os arquivos
+                shutil.rmtree(self.dir, ignore_errors=True)
+                if not Path(self.dir).exists():
+                    break
+                time.sleep(0.5)
 
 
 def purge_stale_runs(max_age: float = 3600) -> None:
