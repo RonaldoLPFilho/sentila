@@ -499,7 +499,7 @@ class TopBar(QFrame):
         h.addWidget(self.version, 0, Qt.AlignVCenter)
         h.addSpacing(18)
         self.nav: dict[str, QPushButton] = {}
-        for key, text in (("files", "Arquivos"), ("procs", "Processos")):
+        for key, text in (("files", "Arquivos"), ("procs", "Processos"), ("comps", "Componentes")):
             b = QPushButton(text)
             b.setObjectName("nav")
             b.setCheckable(True)
@@ -937,10 +937,12 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         from .ui_procs import ProcessPage  # import tardio: ui_procs usa widgets deste módulo
         self.home, self.progress, self.result = HomePage(), ProgressPage(), ResultPage()
+        from .ui_components import ComponentsPage
         self.procs = ProcessPage(self.settings)
+        self.comps = ComponentsPage(self.settings)
         self._procs_busy = False
         self._files_widget: QWidget = self.home
-        for w in (self.home, self.progress, self.result, self.procs):
+        for w in (self.home, self.progress, self.result, self.procs, self.comps):
             self.stack.addWidget(w)
         self.topbar = TopBar()
         central = QWidget()
@@ -954,6 +956,7 @@ class MainWindow(QMainWindow):
         # configurações e troca de aba só quando não há análise em andamento
         self.stack.currentChanged.connect(self._sync_chrome)
         self.procs.busyChanged.connect(self._on_procs_busy)
+        self.comps.busyChanged.connect(self._on_procs_busy)
         self.topbar.navigate.connect(self.navigate)
         self.procs.analyzeFile.connect(self._analyze_from_procs)
 
@@ -983,17 +986,19 @@ class MainWindow(QMainWindow):
 
     def _sync_chrome(self, *_a) -> None:
         cur = self.stack.currentWidget()
-        if cur is not self.procs:
+        if cur not in (self.procs, self.comps):
             self._files_widget = cur
         self.topbar.set_busy(cur is self.progress or self._procs_busy)
-        self.topbar.set_section("procs" if cur is self.procs else "files")
+        self.topbar.set_section("procs" if cur is self.procs else "comps" if cur is self.comps else "files")
 
     def _on_procs_busy(self, busy: bool) -> None:
         self._procs_busy = busy
         self._sync_chrome()
 
     def navigate(self, key: str) -> None:
-        if key == "procs":
+        if key == "comps":
+            self.stack.setCurrentWidget(self.comps)
+        elif key == "procs":
             self.procs.refresh()
             self.stack.setCurrentWidget(self.procs)
         else:

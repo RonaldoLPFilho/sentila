@@ -138,6 +138,11 @@ def run_round6(ctx) -> None:
             ok = True
         check("R6 caminho fora do componente é recusado", ok)
 
+        from sentinela.ui_components import safe_url
+        urls = ["https://www.clamav.net/downloads", "https://www.clamav.net/downloads/production/x.zip"]
+        check("U1 link só abre se https e host do manifesto", safe_url(urls[0], urls) and not safe_url("http://www.clamav.net/x", urls)
+              and not safe_url("https://evil.example/x", urls) and not safe_url("file:///C:/Windows/System32/cmd.exe", urls) and not safe_url("javascript:alert(1)", urls))
+
         # ---------------- ClamAV real (opcional)
         zp = os.environ.get("SENT_CLAMAV_ZIP")
         if zp and Path(zp).exists():

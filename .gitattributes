@@ -1,0 +1,4 @@
+# arquivos cuja assinatura/hash depende dos bytes exatos: nunca converter fim de linha
+sentinela/manifest.json -text
+sentinela/manifest.sig -text
+tests/fixtures/* -text

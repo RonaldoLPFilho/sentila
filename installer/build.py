@@ -65,6 +65,9 @@ def main() -> None:
     print("• empacotando o aplicativo…")
     pyinstaller("--windowed", "--name", "Sentinela", "--icon", str(ico), "--paths", str(ROOT),
                 "--add-data", f"{ROOT / 'sentinela' / 'agent.ps1'};sentinela",
+                "--add-data", f"{ROOT / 'sentinela' / 'manifest.json'};sentinela",
+                "--add-data", f"{ROOT / 'sentinela' / 'manifest.sig'};sentinela",
+                "--add-data", f"{ROOT / 'sentinela' / 'keys'};sentinela/keys",
                 "--exclude-module", "tkinter",
                 "--distpath", str(BUILD / "dist"), "--workpath", str(BUILD / "work_app"), "--specpath", str(BUILD),
                 str(HERE / "run_sentinela.py"))

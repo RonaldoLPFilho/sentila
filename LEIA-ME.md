@@ -93,6 +93,10 @@ Olha o que **já está rodando** no PC (sem precisar de administrador) e respond
 
 **Ações por processo:** mostrar pasta, analisar o arquivo no Sentinela, confiar, **suspender** (reversível) e **encerrar** (com confirmação; recusa processos do sistema, do Windows e o próprio app; antivírus/anticheat geram aviso). A identidade (hora de criação + caminho) é conferida no mesmo handle antes de agir, para nunca atingir outro programa que reutilizou o número do processo. O relatório salvo esconde por padrão seu nome de usuário e segredos de linhas de comando.
 
+## Componentes de terceiros (aba "Componentes")
+
+Nada de terceiros vem no instalador. A aba **Componentes** explica o que baixar (ex.: ClamAV, a 2ª opinião de antivírus), abre a página oficial e **marca sozinha** o item quando ele está instalado e íntegro. Ao **importar** o pacote o Sentinela confere: assinatura GPG com o fingerprint fixado, SHA-256 do manifesto, e **cada arquivo** extraído (nenhum a mais, nenhum alterado). Na hora de usar, roda de uma cópia privada travada. A lista de componentes é assinada (com número de série contra versões antigas e lista de revogação). Limite: malware que já roda como o seu usuário pode alterar o próprio Sentinela.
+
 ## Testes
 
 ```
