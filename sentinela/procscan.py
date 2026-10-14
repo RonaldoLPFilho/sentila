@@ -283,6 +283,9 @@ class Proc:
     gpu_compute: list = field(default_factory=list)  # % por amostra (engines compute/cuda)
     gpu_3d: list = field(default_factory=list)
     remote_ips: set = field(default_factory=set)    # IPs externos contatados
+    arrivals: dict = field(default_factory=dict)    # (ip, porta) -> instantes em que uma conexão NOVA apareceu (aba Rede)
+    dests: dict = field(default_factory=dict)       # (ip, porta) -> nº de conexões distintas vistas (aba Rede)
+    c2_hits: set = field(default_factory=set)       # destinos que estão numa lista de C2 fornecida (aba Rede)
     remote_ports: set = field(default_factory=set)
     scan_ips: set = field(default_factory=set)      # IPs contatados nas portas de varredura
     syn: list = field(default_factory=list)         # nº de conexões SYN_SENT por amostra

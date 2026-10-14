@@ -93,6 +93,14 @@ Olha o que **já está rodando** no PC (sem precisar de administrador) e respond
 
 **Ações por processo:** mostrar pasta, analisar o arquivo no Sentinela, confiar, **suspender** (reversível) e **encerrar** (com confirmação; recusa processos do sistema, do Windows e o próprio app; antivírus/anticheat geram aviso). A identidade (hora de criação + caminho) é conferida no mesmo handle antes de agir, para nunca atingir outro programa que reutilizou o número do processo. O relatório salvo esconde por padrão seu nome de usuário e segredos de linhas de comando.
 
+## Monitorar a rede (aba "Rede")
+
+Fica de 1 minuto até "até eu parar" observando as conexões **deste computador** e procura comunicação suspeita. **Não é captura de pacotes**: amostra a tabela de conexões a cada 0,5 s e os bytes por adaptador, sem administrador, sem driver e sem ler conteúdo. Nada vai para o disco (só se você salvar o relatório, que esconde seu usuário por padrão).
+
+**O que acusa:** programa **sem assinatura** que abre conexões novas ao mesmo destino em intervalos regulares (~"ligar para casa", só com janela ≥ 10 min), varredura de outros PCs (inclui a rede local), portas de IRC/Tor, pools de mineração, destinos de listas de C2 (gancho pronto; listas externas só entram com download verificado), além das regras da aba Processos. Programa assinado com a mesma periodicidade é só informação.
+
+**Limites (leia):** sem administrador **não há bytes por programa** (só o total por adaptador: não dá para saber quem enviou o quê), conexões < 0,5 s e todo o conteúdo cifrado não são vistos; Discord/GitHub/nuvem/DoH usados por malware parecem tráfego normal; VPN esconde o programa de origem; o nome do destino vem do cache DNS do sistema (pista, não prova). "Sem indícios (parcial)" nunca significa "rede segura". Em computador de empresa, confirme que a política permite o monitoramento. O modo avançado (bytes por processo via ETW, DNS tunneling) exige um helper assinado e administrador e fica para uma versão futura.
+
 ## Componentes de terceiros (aba "Componentes")
 
 Nada de terceiros vem no instalador. A aba **Componentes** explica o que baixar (ex.: ClamAV, a 2ª opinião de antivírus), abre a página oficial e **marca sozinha** o item quando ele está instalado e íntegro. Ao **importar** o pacote o Sentinela confere: assinatura GPG com o fingerprint fixado, SHA-256 do manifesto, e **cada arquivo** extraído (nenhum a mais, nenhum alterado). Na hora de usar, roda de uma cópia privada travada. A lista de componentes é assinada (com número de série contra versões antigas e lista de revogação). Limite: malware que já roda como o seu usuário pode alterar o próprio Sentinela.

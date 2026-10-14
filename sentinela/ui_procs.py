@@ -186,7 +186,82 @@ class TrustDialog(QDialog):
         self._fill()
 
 
-class ProcessPage(QWidget):
+class ProcActionsMixin:
+    """Cartão de processo + ações (mostrar pasta, analisar, confiar, suspender, encerrar). Usado pelas abas Processos e Rede."""
+
+    def _card(self, p: ps.Proc) -> ProcCard:
+        c = ProcCard(p)
+        c.openFolder.connect(self._open_folder)
+        c.analyze.connect(lambda pr: self.analyzeFile.emit(pr.exe))
+        c.trust.connect(lambda pr, card_=c: self._trust(pr, card_))
+        c.suspend.connect(lambda pr, card_=c: self._act(pr, "suspend", card_))
+        c.terminate.connect(lambda pr, card_=c: self._act(pr, "terminate", card_))
+        return c
+
+    # ---------------------------------------------------------------- ações
+    def _open_folder(self, p: ps.Proc) -> None:
+        if p.exe and os.path.exists(p.exe):
+            subprocess.Popen(["explorer.exe", f"/select,{p.exe}"])
+
+    def _ask(self, text: str, yes: str, danger: bool = False) -> bool:
+        m = QMessageBox(QMessageBox.Warning if danger else QMessageBox.Question, "Sentinela", text, parent=self)
+        m.setTextFormat(Qt.PlainText)
+        y = m.addButton(yes, QMessageBox.DestructiveRole if danger else QMessageBox.AcceptRole)
+        m.addButton("Cancelar", QMessageBox.RejectRole)
+        m.setDefaultButton(m.buttons()[-1])
+        m.exec()
+        return m.clickedButton() is y
+
+    def _trust(self, p: ps.Proc, c: ProcCard) -> None:
+        if not p.sha256:
+            return
+        if p.stem in ps.TRUST_BLOCKED:
+            QMessageBox.information(self, "Sentinela", "Não é possível confiar em interpretadores (python, node, java, PowerShell, cmd…): "
+                                    "confiar neles silenciaria qualquer script malicioso que rodasse por meio deles.")
+            return
+        extra = "\n\nATENÇÃO: este programa tem alertas graves. Só confie se você mesmo o instalou e sabe o que ele faz." if p.level == "danger" else ""
+        if not self._ask(f"Confiar neste arquivo?\n\n{ps.clean_text(p.name, 80)}\n{ps.clean_text(p.exe, 200)}\nSHA-256: {p.sha256[:32]}…\n\n"
+                         "Ele deixará de gerar alertas enquanto o arquivo não mudar (você pode revogar depois)." + extra, "Confiar", p.level == "danger"):
+            return
+        lst = [e for e in self.settings.data.get("proc_ignore", []) if isinstance(e, dict) and e.get("sha256") != p.sha256]
+        lst.append({"sha256": p.sha256, "name": ps.clean_text(p.name, 80), "motivo": f"confiado em {date.today().isoformat()}"})
+        self.settings.data["proc_ignore"] = lst
+        self.settings.save()
+        c.set_note("Marcado como confiável. Rode a verificação de novo para atualizar o resultado.")
+        for b in c.buttons:
+            b.setEnabled(False)
+
+    def _act(self, p: ps.Proc, action: str, c: ProcCard) -> None:
+        why = ps.action_block_reason(p)
+        if why:
+            QMessageBox.information(self, "Sentinela", why)
+            return
+        verb = "Encerrar" if action == "terminate" else "Suspender"
+        warn = ps.action_warning(p)
+        text = (f"{verb} este processo?\n\n{ps.clean_text(p.name, 80)} (PID {p.pid})\n{ps.clean_text(p.exe, 200)}\n\n"
+                + ("Isto encerra o programa, mas NÃO remove o que ele instalou nem como ele inicia com o Windows." if action == "terminate"
+                   else "O programa fica pausado até você retomá-lo (volte à tela inicial desta aba)."))
+        if warn:
+            text += "\n\n" + warn
+        if not self._ask(text, verb, danger=True):
+            return
+        msg = ps.act_on_process(p, action)
+        if msg:
+            QMessageBox.warning(self, "Sentinela", msg)
+            return
+        for b in c.buttons:
+            b.setEnabled(False)
+        if action == "terminate":
+            c.set_note("Processo encerrado. Isto não remove o arquivo nem a inicialização automática.")
+        else:
+            c.set_note("Processo suspenso. Retome pela tela inicial desta aba quando quiser.", ok=False)
+            lst = list(self.settings.data.get("proc_suspended", []))
+            lst.append({"pid": p.pid, "create_time": p.create_time, "name": ps.clean_text(p.name, 80), "exe": p.exe})
+            self.settings.data["proc_suspended"] = lst
+            self.settings.save()
+
+
+class ProcessPage(ProcActionsMixin, QWidget):
     busyChanged = Signal(bool)
     analyzeFile = Signal(str)
 
@@ -523,77 +598,6 @@ class ProcessPage(QWidget):
                                 "arquivo no disco, não o que está na memória.", 12, 400, MUTED, True))
         self.list.addStretch()
         self.stack.setCurrentWidget(self.res)
-
-    def _card(self, p: ps.Proc) -> ProcCard:
-        c = ProcCard(p)
-        c.openFolder.connect(self._open_folder)
-        c.analyze.connect(lambda pr: self.analyzeFile.emit(pr.exe))
-        c.trust.connect(lambda pr, card_=c: self._trust(pr, card_))
-        c.suspend.connect(lambda pr, card_=c: self._act(pr, "suspend", card_))
-        c.terminate.connect(lambda pr, card_=c: self._act(pr, "terminate", card_))
-        return c
-
-    # ---------------------------------------------------------------- ações
-    def _open_folder(self, p: ps.Proc) -> None:
-        if p.exe and os.path.exists(p.exe):
-            subprocess.Popen(["explorer.exe", f"/select,{p.exe}"])
-
-    def _ask(self, text: str, yes: str, danger: bool = False) -> bool:
-        m = QMessageBox(QMessageBox.Warning if danger else QMessageBox.Question, "Sentinela", text, parent=self)
-        m.setTextFormat(Qt.PlainText)
-        y = m.addButton(yes, QMessageBox.DestructiveRole if danger else QMessageBox.AcceptRole)
-        m.addButton("Cancelar", QMessageBox.RejectRole)
-        m.setDefaultButton(m.buttons()[-1])
-        m.exec()
-        return m.clickedButton() is y
-
-    def _trust(self, p: ps.Proc, c: ProcCard) -> None:
-        if not p.sha256:
-            return
-        if p.stem in ps.TRUST_BLOCKED:
-            QMessageBox.information(self, "Sentinela", "Não é possível confiar em interpretadores (python, node, java, PowerShell, cmd…): "
-                                    "confiar neles silenciaria qualquer script malicioso que rodasse por meio deles.")
-            return
-        extra = "\n\nATENÇÃO: este programa tem alertas graves. Só confie se você mesmo o instalou e sabe o que ele faz." if p.level == "danger" else ""
-        if not self._ask(f"Confiar neste arquivo?\n\n{ps.clean_text(p.name, 80)}\n{ps.clean_text(p.exe, 200)}\nSHA-256: {p.sha256[:32]}…\n\n"
-                         "Ele deixará de gerar alertas enquanto o arquivo não mudar (você pode revogar depois)." + extra, "Confiar", p.level == "danger"):
-            return
-        lst = [e for e in self.settings.data.get("proc_ignore", []) if isinstance(e, dict) and e.get("sha256") != p.sha256]
-        lst.append({"sha256": p.sha256, "name": ps.clean_text(p.name, 80), "motivo": f"confiado em {date.today().isoformat()}"})
-        self.settings.data["proc_ignore"] = lst
-        self.settings.save()
-        c.set_note("Marcado como confiável. Rode a verificação de novo para atualizar o resultado.")
-        for b in c.buttons:
-            b.setEnabled(False)
-
-    def _act(self, p: ps.Proc, action: str, c: ProcCard) -> None:
-        why = ps.action_block_reason(p)
-        if why:
-            QMessageBox.information(self, "Sentinela", why)
-            return
-        verb = "Encerrar" if action == "terminate" else "Suspender"
-        warn = ps.action_warning(p)
-        text = (f"{verb} este processo?\n\n{ps.clean_text(p.name, 80)} (PID {p.pid})\n{ps.clean_text(p.exe, 200)}\n\n"
-                + ("Isto encerra o programa, mas NÃO remove o que ele instalou nem como ele inicia com o Windows." if action == "terminate"
-                   else "O programa fica pausado até você retomá-lo (volte à tela inicial desta aba)."))
-        if warn:
-            text += "\n\n" + warn
-        if not self._ask(text, verb, danger=True):
-            return
-        msg = ps.act_on_process(p, action)
-        if msg:
-            QMessageBox.warning(self, "Sentinela", msg)
-            return
-        for b in c.buttons:
-            b.setEnabled(False)
-        if action == "terminate":
-            c.set_note("Processo encerrado. Isto não remove o arquivo nem a inicialização automática.")
-        else:
-            c.set_note("Processo suspenso. Retome pela tela inicial desta aba quando quiser.", ok=False)
-            lst = list(self.settings.data.get("proc_suspended", []))
-            lst.append({"pid": p.pid, "create_time": p.create_time, "name": ps.clean_text(p.name, 80), "exe": p.exe})
-            self.settings.data["proc_suspended"] = lst
-            self.settings.save()
 
     def _show_all(self) -> None:
         if self.rep:

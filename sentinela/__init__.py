@@ -1,3 +1,3 @@
 """Sentinela: analisa arquivos baixados (reputação, Defender, assinatura, sandbox) antes de você abrir."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
