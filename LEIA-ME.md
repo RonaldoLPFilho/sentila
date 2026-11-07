@@ -6,7 +6,7 @@ Analisa jogos, mods e arquivos baixados **antes** de você abrir, com poucos fal
 > hash no site oficial, reputação do autor). Uma auditoria independente mostrou que "nenhum alerta" nunca deve ser lido como
 > "garantido seguro": por isso existe o nível **Inconclusivo**.
 
-## Menu (v1.6)
+## Menu (v1.7)
 
 - **Scan** agrupa as formas de analisar, numa segunda barra: **Arquivos**, **Processos**, **Rede** e **Computador**. O item "Scan" volta à última opção que você usou.
 - **Histórico** mostra as **últimas 10 análises de todos os tipos**, com data, duração, veredito e o **relatório** de cada uma (ver, salvar como .txt, remover, limpar tudo). Fica só neste computador, e os relatórios já são guardados com seu nome de usuário e possíveis segredos escondidos.
