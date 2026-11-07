@@ -40,10 +40,10 @@ BUNDLED_MANIFEST = Path(__file__).with_name("manifest.json")
 BUNDLED_SIG = Path(__file__).with_name("manifest.sig")
 # Chaves de assinatura do manifesto (Ed25519, base64 da chave pública crua). Duas posições: a atual e a próxima (rotação).
 MANIFEST_PUBKEYS = [
-    "Eh/2pS4TeOWDWwXux2sUhoF5826174RxuEUoIkTMi3M=",   # chave de DESENVOLVIMENTO (a de release deve ser offline e substituir esta)
+    "VBVq4Gt8I20hW/z/Yaf6JE7YSpD5Idg4/xC1/lOKnIg=",   # chave de RELEASE (2026-11-07; privada cifrada, guardada fora do PC)
 ]
 SERIAL_KEY = r"Software\Sentinela"
-MIN_SERIAL = 1   # piso NO CÓDIGO: apagar/baixar o serial do registro não reabre manifestos mais antigos que este (suba a cada release)
+MIN_SERIAL = 2   # piso NO CÓDIGO: apagar/baixar o serial do registro não reabre manifestos mais antigos que este (suba a cada release)
 MAX_MANIFEST = 1 << 20
 
 # estados mostrados na tela Componentes
