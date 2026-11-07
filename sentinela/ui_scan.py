@@ -522,6 +522,10 @@ class ScanPage(QWidget):
                 for f in p.findings:
                     if f.points > 0 or f.severity != "info":
                         self.list.addWidget(FindingCard(Finding(f.stage, f"{f.title}", f"{p.kind} · {ps.clean_text(p.where, 80)}: {ps.clean_text(p.command, 200)}\n{f.detail}", f.points, f.severity)))
+        if rep.kernel:
+            self._section("Drivers de kernel")
+            for f in sorted(rep.kernel, key=lambda f: -f.points):
+                self.list.addWidget(FindingCard(f))
         hyg = [f for f in rep.hygiene if f.points > 0 or f.severity != "info"]
         if hyg:
             self._section("Higiene do Windows")

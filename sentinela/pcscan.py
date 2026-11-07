@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import components as comp
+from . import kerneldrv
 from . import offscan
 from . import procscan as ps
 from . import scanengines as se
@@ -534,13 +535,18 @@ class PcReport:
     engines: dict
     stats: dict
     started: float = 0.0
+    kernel: list = field(default_factory=list)
 
 
-def pc_verdict(items: list, persist: list, hyg: list, procs, gaps: list) -> Verdict:
+def pc_verdict(items: list, persist: list, hyg: list, procs, gaps: list, kernel: list | None = None) -> Verdict:
     hyg_level = ps.level_of(hyg)[1]
     hyg_level = "caution" if hyg_level == "danger" else hyg_level   # configuração insegura NÃO é prova de malware: no máximo Atenção
-    levels = [i.level for i in items] + [p.level for p in persist] + [hyg_level] + ([procs.verdict.level] if procs is not None and procs.verdict.level in ("danger", "caution") else [])
-    score = max([i.score for i in items] + [p.score for p in persist] + [compute_score(hyg)] + ([procs.verdict.score] if procs is not None else []) + [0])
+    # drivers: um a um (dois drivers vulneráveis legítimos não somam "Perigoso"; só malicioso conhecido ou driver de pasta de usuário sem assinatura válida)
+    k_levels = [ps.level_of([f])[1] for f in (kernel or [])]
+    levels = ([i.level for i in items] + [p.level for p in persist] + [hyg_level] + k_levels
+              + ([procs.verdict.level] if procs is not None and procs.verdict.level in ("danger", "caution") else []))
+    score = max([i.score for i in items] + [p.score for p in persist] + [compute_score(hyg)] + [f.points for f in (kernel or [])]
+                + ([procs.verdict.score] if procs is not None else []) + [0])
     if "danger" in levels:
         return Verdict(score, "danger", "Perigoso", "Há sinais fortes de malware (veja os achados). Não abra os arquivos apontados; analise-os no Sentinela ou mova-os para a quarentena.")
     n = sum(1 for l in levels if l == "caution")
@@ -606,6 +612,11 @@ def run_pc_scan(settings, mode: str, vt: VirusTotal | None = None, allow_clam_up
     hyg, hgaps, hnotes = hygiene(cancelled)
     gaps += hgaps
     notes += hnotes
+    step(4, "Conferindo os drivers de kernel…")
+    kfs, knotes, kok = kerneldrv.scan(cancelled)
+    notes += knotes
+    if not kok:
+        gaps.append(gap("A lista de drivers de kernel não pôde ser lida"))
 
     step(5, "ClamAV: segunda opinião…")
     man = None
@@ -668,10 +679,10 @@ def run_pc_scan(settings, mode: str, vt: VirusTotal | None = None, allow_clam_up
         gaps += [g for g in procs.gaps if "sem assinatura e sem reputação" not in g.title]
         notes += procs.limits[:1]
     flagged = [p for p in persist_flagged if p.level != "ok"]
-    verdict = pc_verdict(items, flagged, hyg, procs, gaps)
+    verdict = pc_verdict(items, flagged, hyg, procs, gaps, kfs)
     stats = {"detections": len(dets), "files_flagged": len([i for i in items if i.level != "ok"]), "persist_total": len(pitems), "persist_flagged": len(flagged),
              "zone_files": len(zr.files) if zr else 0, "av": av}
-    return PcReport(mode, items, flagged, hyg, procs, gaps, limits, notes, verdict, time.time() - t0, engines, stats, since)
+    return PcReport(mode, items, flagged, hyg, procs, gaps, limits, notes, verdict, time.time() - t0, engines, stats, since, kfs)
 
 
 def report_text(rep: PcReport, redact_on: bool = True) -> str:
@@ -690,6 +701,8 @@ def report_text(rep: PcReport, redact_on: bool = True) -> str:
         for f in p.findings:
             if f.points > 0 or f.severity != "info":
                 lines.append(f"    - {ps.clean_text(f.title, 160)} ({f.points:+d})")
+    for f in rep.kernel:
+        lines.append(f"[driver] {ps.clean_text(f.title, 160)} ({f.points:+d}): {fix(ps.clean_text(f.detail, 400))}")
     for f in rep.hygiene:
         lines.append(f"[higiene] {ps.clean_text(f.title, 160)} ({f.points:+d}): {fix(ps.clean_text(f.detail, 240))}")
     lines += ["", "Não verificado / limites:"] + [f"  - {ps.clean_text(g.title, 200)}" for g in rep.gaps] + [f"  - {ps.clean_text(x, 200)}" for x in rep.limits]

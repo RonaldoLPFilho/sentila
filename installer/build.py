@@ -67,6 +67,7 @@ def main() -> None:
                 "--add-data", f"{ROOT / 'sentinela' / 'agent.ps1'};sentinela",
                 "--add-data", f"{ROOT / 'sentinela' / 'manifest.json'};sentinela",
                 "--add-data", f"{ROOT / 'sentinela' / 'manifest.sig'};sentinela",
+                "--add-data", f"{ROOT / 'sentinela' / 'vulndrivers.json'};sentinela",
                 "--add-data", f"{ROOT / 'sentinela' / 'keys'};sentinela/keys",
                 "--exclude-module", "tkinter",
                 "--distpath", str(BUILD / "dist"), "--workpath", str(BUILD / "work_app"), "--specpath", str(BUILD),
