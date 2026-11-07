@@ -284,6 +284,9 @@ def run() -> None:
     from round11 import run_round11
     run_round11(types.SimpleNamespace(check=check))
 
+    from round12 import run_round12
+    run_round12(types.SimpleNamespace(check=check))
+
     # av_blocked só para 225/226
     check("M2 FileNotFoundError não é 'bloqueado pelo antivírus'", not checks.av_blocked(FileNotFoundError(2, "x")))
     e = OSError(22, "Invalid argument")

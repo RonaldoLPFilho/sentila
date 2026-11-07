@@ -277,6 +277,92 @@ ConvertTo-Json -InputObject @(Get-LocalGroupMember -SID 'S-1-5-32-544' | ForEach
 """
 
 
+_PS_DG = r"""
+$ErrorActionPreference='SilentlyContinue'
+$d=Get-CimInstance -Namespace root/Microsoft/Windows/DeviceGuard -ClassName Win32_DeviceGuard
+if($d){ ConvertTo-Json -InputObject ([pscustomobject]@{vbs=[int]$d.VirtualizationBasedSecurityStatus; cfg=@($d.SecurityServicesConfigured|%{[int]$_}); run=@($d.SecurityServicesRunning|%{[int]$_})}) -Compress }
+"""
+
+
+def _reg_str(hive, sub: str, name: str) -> str | None:
+    try:
+        with winreg.OpenKey(hive, sub) as k:
+            return str(winreg.QueryValueEx(k, name)[0])
+    except OSError:
+        return None
+
+
+def boot_state(cancelled=lambda: False) -> dict:
+    """Postura de boot/kernel legível SEM administrador. Cada campo None = não deu para ler."""
+    dg = None
+    raw = run_powershell(_PS_DG, timeout=30, cancelled=cancelled)
+    try:
+        d = json.loads(raw) if raw and raw.strip() else None
+        dg = d if isinstance(d, dict) else None
+    except ValueError:
+        pass
+    mv = None
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\ManageVBS") as k:
+            mv = []
+            i = 0
+            while True:
+                try:
+                    mv.append(winreg.EnumValue(k, i)[0])
+                    i += 1
+                except OSError:
+                    break
+    except OSError:
+        pass
+    return {"start": _reg_str(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control", "SystemStartOptions"),
+            "secureboot": _dword(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\SecureBoot\State", "UEFISecureBootEnabled"),
+            "dg": dg, "managevbs": mv}
+
+
+def boot_findings(st: dict) -> tuple[list[Finding], list[str]]:
+    """Achados da postura de boot/kernel (o que cracks de hipervisor desligam). Configuração insegura não é prova de malware: o veredito limita a Atenção."""
+    fs: list[Finding] = []
+    notes: list[str] = []
+    opts = set((st.get("start") or "").upper().split())
+    keys = {o.split("=")[0]: (o.split("=", 1)[1] if "=" in o else "") for o in opts}
+    if "DISABLE_INTEGRITY_CHECKS" in keys or "NOINTEGRITYCHECKS" in keys:
+        fs.append(Finding("hygiene", "Verificação de assinatura de drivers DESLIGADA no boot atual",
+                          "O Windows está aceitando drivers de kernel sem assinatura. Cracks com hipervisor próprio e rootkits pedem isso. "
+                          "Se não foi você, reverta (bcdedit /deletevalue {current} nointegritychecks, como administrador) e verifique o PC.", 40, "high"))
+    if "TESTSIGNING" in keys:
+        fs.append(Finding("hygiene", "Modo de teste de drivers (TESTSIGNING) ativo",
+                          "Drivers assinados com certificado de teste carregam no kernel. Reverta com bcdedit /set {current} testsigning off (como administrador).", 35, "high"))
+    if keys.get("HYPERVISORLAUNCHTYPE") == "OFF":
+        fs.append(Finding("hygiene", "Hipervisor do Windows desligado no boot",
+                          "Sem ele não funcionam Windows Sandbox, WSL2, Docker e a segurança baseada em virtualização (VBS). Cracks de hipervisor exigem isso desligado. "
+                          "Para religar: bcdedit /set {current} hypervisorlaunchtype auto (como administrador) e reinicie.", 8, "low"))
+    sb = st.get("secureboot")
+    if sb == 0:
+        fs.append(Finding("hygiene", "Secure Boot desligado", "Sem ele, bootkits e drivers de teste carregam antes do Windows. Religue na BIOS/UEFI.", 15, "medium"))
+    elif sb is None:
+        notes.append("Estado do Secure Boot não pôde ser lido (BIOS legado ou sem suporte).")
+    dg = st.get("dg")
+    if isinstance(dg, dict):
+        vbs, cfg, run = dg.get("vbs"), set(dg.get("cfg") or []), set(dg.get("run") or [])
+        if vbs == 0:
+            fs.append(Finding("hygiene", "Segurança baseada em virtualização (VBS) desligada",
+                              "Ligue em Segurança do Windows > Segurança do dispositivo > Isolamento de núcleo.", 5, "low"))
+        elif vbs == 1:
+            fs.append(Finding("hygiene", "VBS ativado, mas não está rodando",
+                              "Reinício pendente ou hipervisor do Windows desligado no boot.", 5, "low"))
+        if 2 in cfg and 2 not in run and vbs != 0:
+            notes.append("Integridade da memória (HVCI) configurada, mas ainda não ativa (reinício pendente ou driver incompatível).")
+    else:
+        notes.append("Estado da segurança baseada em virtualização (Win32_DeviceGuard) não pôde ser lido.")
+    mv = st.get("managevbs")
+    if mv is not None:
+        what = ", ".join(ps.clean_text(v, 30) for v in mv[:8]) or "vazia"
+        fs.append(Finding("hygiene", "Sobra de script de bypass de hipervisor (HKLM\\SOFTWARE\\ManageVBS)",
+                          f"Scripts de crack que trocam o Denuvo por um hipervisor próprio gravam aqui o que desligaram ({what}). "
+                          "Confira se VBS, Integridade da memória e hipervisor foram religados; depois a chave pode ser apagada.", 20, "medium"))
+    return fs, notes
+
+
 def antivirus_products(cancelled=lambda: False) -> list[tuple[str, bool]]:
     """(nome, ativo?) pelo Centro de Segurança. productState: bits 0x1000 = ligado."""
     out = []
@@ -316,6 +402,9 @@ def hygiene(cancelled=lambda: False) -> tuple[list[Finding], list[Finding], list
         fs.append(Finding("hygiene", "SmartScreen desativado por política", "", 10, "low"))
     if _dword(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters", "SMB1") == 1:
         fs.append(Finding("hygiene", "SMBv1 habilitado", "Protocolo antigo e vulnerável (usado pelo WannaCry). Desative.", 15, "low"))
+    bfs, bnotes = boot_findings(boot_state(cancelled))
+    fs += bfs
+    notes += bnotes
     if offscan.winre_enabled() is False:
         fs.append(Finding("hygiene", "Ambiente de Recuperação do Windows (WinRE) desativado",
                           "Sem ele não funcionam o reparo automático de inicialização, \"Restaurar o PC\" e a verificação offline do Defender. " + offscan.WINRE_FIX,
