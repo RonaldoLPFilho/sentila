@@ -1172,6 +1172,8 @@ class MainWindow(QMainWindow):
         self.scan.busyChanged.connect(self._on_procs_busy)
         self.scan.analyzeFile.connect(self._analyze_from_procs)
         self.scan.openComponents.connect(lambda: self.navigate("comps"))
+        self.scan.openHistory.connect(lambda: self.navigate("history"))
+        QTimer.singleShot(1500, self.scan.check_offline)    # resultado de uma verificação offline pedida antes do último reinício
         self.net.analyzeFile.connect(self._analyze_from_procs)
         self.topbar.navigate.connect(self.navigate)
         self.subbar.navigate.connect(self.navigate)

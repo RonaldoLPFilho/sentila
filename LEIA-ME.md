@@ -6,7 +6,7 @@ Analisa jogos, mods e arquivos baixados **antes** de você abrir, com poucos fal
 > hash no site oficial, reputação do autor). Uma auditoria independente mostrou que "nenhum alerta" nunca deve ser lido como
 > "garantido seguro": por isso existe o nível **Inconclusivo**.
 
-## Menu (v1.5)
+## Menu (v1.6)
 
 - **Scan** agrupa as formas de analisar, numa segunda barra: **Arquivos**, **Processos**, **Rede** e **Computador**. O item "Scan" volta à última opção que você usou.
 - **Histórico** mostra as **últimas 10 análises de todos os tipos**, com data, duração, veredito e o **relatório** de cada uma (ver, salvar como .txt, remover, limpar tudo). Fica só neste computador, e os relatórios já são guardados com seu nome de usuário e possíveis segredos escondidos.
@@ -108,7 +108,8 @@ Combina o **Microsoft Defender** com uma **segunda opinião do ClamAV** (assinat
 - **Completa (1 a 3 h):** a anterior + Defender completo + ClamAV em todas as pastas de risco (Downloads, Desktop, Temp, ProgramData, AppData, Documentos) e nas pastas de jogos/mods (Steam, Epic, GOG). Só executáveis/scripts; não segue atalhos de pasta, não baixa arquivos que estão só na nuvem (OneDrive) e só olha discos fixos.
 - **Como evita falso positivo:** os motores NÃO são independentes entre si. "Perigoso" exige o **nome de uma família** do Defender, ou ClamAV de família **com o Defender concordando** no mesmo arquivo. Detecção genérica/PUA/heurística de um motor só gera Atenção (ou só informação, no caso do ClamAV). Arquivo assinado pela Microsoft nunca é acusado. Programa sem assinatura que inicia com o Windows, sozinho, é só nota; o que pesa é a combinação (tarefa oculta, LOLBin carregando payload de pasta de usuário…). "Confiar" vale por SHA-256.
 - **Ações:** nunca automáticas. **Quarentena reversível** (cofre com ACL só do usuário, nome GUID, extensão neutra; restaurar nunca sobrescreve; recusa arquivos do Windows/Program Files/assinados pela Microsoft/em uso/atrás de junction/só na nuvem) e "Analisar no Sentinela".
-- **Limites:** não vê rootkits de kernel nem malware só em memória; sem administrador as exclusões do Defender não são lidas e o modo Profunda (Defender Offline, reinicia o PC) ainda não existe; o ClamAV tem pouca cobertura de malware Windows recente e muitos falsos positivos em mods; um resultado limpo é "Sem indícios (parcial)", nunca "PC limpo". Isto não substitui um antivírus residente.
+- **Verificação offline (botão "Verificação offline…"):** roda o Defender fora do Windows, no Ambiente de Recuperação (WinRE), antes de o Windows carregar. Confere antes se o WinRE está ativo (sem ele o Defender recusa, erro 0x80070032) e ensina a reativar; pede administrador (UAC) só para o `Start-MpWDOScan`; o PC reinicia sozinho (cerca de 15 min). Na próxima abertura do Sentinela, se o PC reiniciou depois do pedido, as detecções do Defender desde o pedido vão para o Histórico. O Windows não registra de forma confiável o fim da offline: o reinício é o sinal usado. A higiene também aponta "WinRE desativado".
+- **Limites:** não vê rootkits de kernel nem malware só em memória (a verificação offline cobre parte disso); sem administrador as exclusões do Defender não são lidas; o ClamAV tem pouca cobertura de malware Windows recente e muitos falsos positivos em mods; um resultado limpo é "Sem indícios (parcial)", nunca "PC limpo". Isto não substitui um antivírus residente.
 
 ## Monitorar a rede (aba "Rede")
 

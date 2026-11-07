@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import components as comp
+from . import offscan
 from . import procscan as ps
 from . import scanengines as se
 from .checks import VirusTotal, hash_file, run_powershell, verify_signatures, vt_findings
@@ -315,6 +316,10 @@ def hygiene(cancelled=lambda: False) -> tuple[list[Finding], list[Finding], list
         fs.append(Finding("hygiene", "SmartScreen desativado por política", "", 10, "low"))
     if _dword(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters", "SMB1") == 1:
         fs.append(Finding("hygiene", "SMBv1 habilitado", "Protocolo antigo e vulnerável (usado pelo WannaCry). Desative.", 15, "low"))
+    if offscan.winre_enabled() is False:
+        fs.append(Finding("hygiene", "Ambiente de Recuperação do Windows (WinRE) desativado",
+                          "Sem ele não funcionam o reparo automático de inicialização, \"Restaurar o PC\" e a verificação offline do Defender. " + offscan.WINRE_FIX,
+                          5, "low"))
     adm = _json_list(run_powershell(_PS_ADM, timeout=30, cancelled=cancelled))
     if adm:
         names = [ps.clean_text(d.get("n", "?"), 40) for d in adm]

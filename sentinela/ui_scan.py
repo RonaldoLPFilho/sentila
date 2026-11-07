@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFram
                                QVBoxLayout, QWidget)
 
 from . import components as comp
+from . import offscan as off
 from . import pcscan as pc
 from . import procscan as ps
 from . import quarantine as quar
@@ -143,6 +144,7 @@ class ScanPage(QWidget):
     busyChanged = Signal(bool)
     analyzeFile = Signal(str)
     openComponents = Signal()
+    openHistory = Signal()
 
     def __init__(self, settings: Settings) -> None:
         super().__init__()
@@ -151,6 +153,7 @@ class ScanPage(QWidget):
         self.worker: Worker | None = None
         self.rep: pc.PcReport | None = None
         self._cancel = False
+        self._off_busy = False
         self._keep: list = []
         self.rows: dict[str, StepRow] = {}
         self.guard = lambda: True
@@ -204,7 +207,11 @@ class ScanPage(QWidget):
         self.b_q = QPushButton("Quarentena")
         self.b_q.setObjectName("ghost")
         self.b_q.clicked.connect(lambda: QuarantineDialog(self).exec())
-        for b in (self.go, self.b_comp, self.b_q):
+        self.b_off = QPushButton("Verificação offline…")
+        self.b_off.setObjectName("ghost")
+        self.b_off.setToolTip("Defender fora do Windows (no Ambiente de Recuperação): reinicia o PC, cerca de 15 min, pede administrador")
+        self.b_off.clicked.connect(self.start_offline)
+        for b in (self.go, self.b_off, self.b_comp, self.b_q):
             btns.addWidget(b)
         btns.addStretch()
         v.addSpacing(4)
@@ -298,6 +305,7 @@ class ScanPage(QWidget):
     def set_locked(self, locked: bool) -> None:
         self.go.setEnabled(not locked)
         self.go.setToolTip("Há uma tarefa em andamento." if locked else "")
+        self.b_off.setEnabled(not locked and not self._off_busy)
 
     def show_idle(self) -> None:
         self.refresh()
@@ -414,6 +422,73 @@ class ScanPage(QWidget):
             pass
         self.busyChanged.emit(False)
         QTimer.singleShot(300, lambda: self.show_result(rep))
+
+    # ---------------------------------------------------------------- verificação offline do Defender
+    def _run_bg(self, fn, on_done) -> None:
+        w = Worker(lambda emit: fn())
+        w.done.connect(on_done)
+        w.failed.connect(lambda tb: on_done(None))
+        self._keep = [x for x in self._keep if x.isRunning()] + [w]
+        w.start()
+
+    def start_offline(self) -> None:
+        if self._off_busy or (self.worker and self.worker.isRunning()) or not self.guard():
+            return
+        winre = off.winre_enabled()
+        if winre is False:
+            m = QMessageBox(QMessageBox.Warning, "Sentinela", "O Ambiente de Recuperação do Windows (WinRE) está desativado, e a verificação offline roda dentro dele: "
+                            "o Defender recusaria o pedido.\n\n" + off.WINRE_FIX, parent=self)
+            m.setTextFormat(Qt.PlainText)
+            m.exec()
+            return
+        txt = ("A verificação offline roda o Defender FORA do Windows, antes de ele carregar, e pega o que se esconde do Windows em execução.\n\n"
+               "• O Windows vai pedir permissão de administrador.\n• O PC REINICIA SOZINHO em poucos segundos: salve tudo antes.\n"
+               "• Leva cerca de 15 minutos; não desligue o PC durante.\n• Na próxima vez que abrir o Sentinela, o resultado vai para o Histórico.")
+        if winre is None:
+            txt += "\n\nNão deu para confirmar se o WinRE está ativo; se o Defender recusar, o Sentinela explica o motivo."
+        m = QMessageBox(QMessageBox.Question, "Sentinela", txt, parent=self)
+        m.setTextFormat(Qt.PlainText)
+        yes = m.addButton("Reiniciar e verificar", QMessageBox.AcceptRole)
+        m.addButton("Cancelar", QMessageBox.RejectRole)
+        m.exec()
+        if m.clickedButton() is not yes:
+            return
+        self._off_busy = True
+        self.b_off.setEnabled(False)
+        self.b_off.setText("Aguardando permissão…")
+        self._run_bg(off.start, self._on_offline_started)
+
+    def _on_offline_started(self, r) -> None:
+        self._off_busy = False
+        self.b_off.setText("Verificação offline…")
+        self.b_off.setEnabled(True)
+        if r is None:
+            off.clear()
+            r = off.StartResult("error", "Erro inesperado ao agendar a verificação offline.")
+        icon = {"started": QMessageBox.Information, "denied": QMessageBox.Information}.get(r.status, QMessageBox.Warning)
+        m = QMessageBox(icon, "Sentinela", r.message, parent=self)
+        m.setTextFormat(Qt.PlainText)
+        m.exec()
+
+    def check_offline(self) -> None:
+        """Chamado ao abrir o app: se uma offline foi pedida antes do último reinício, registra o resultado no Histórico."""
+        if off.pending():
+            self._run_bg(off.collect, self._on_offline_result)
+
+    def _on_offline_result(self, res) -> None:
+        if res is None:
+            return
+        from . import history
+        history.record("pc", "Verificação offline do Defender", res.level, res.headline, res.score, res.summary, off.report_text(res), 0.0,
+                       f"{len(res.detections)} detecção(ões)")
+        m = QMessageBox(QMessageBox.Warning if res.level in ("danger", "caution") else QMessageBox.Information, "Sentinela",
+                        f"Verificação offline do Defender: {res.headline}\n\n{res.summary}", parent=self)
+        m.setTextFormat(Qt.PlainText)
+        see = m.addButton("Ver no Histórico", QMessageBox.AcceptRole)
+        m.addButton("Fechar", QMessageBox.RejectRole)
+        m.exec()
+        if m.clickedButton() is see:
+            self.openHistory.emit()
 
     # ---------------------------------------------------------------- resultado
     def _section(self, title: str) -> None:
