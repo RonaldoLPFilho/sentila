@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import struct
@@ -54,7 +55,21 @@ def pyinstaller(*args: str) -> None:
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", *args], check=True)
 
 
+DEV_PUBKEYS = {"Eh/2pS4TeOWDWwXux2sUhoF5826174RxuEUoIkTMi3M="}   # chave de desenvolvimento (sem senha): nunca num instalador de release
+
+
+def check_release_keys() -> None:
+    sys.path.insert(0, str(ROOT))
+    from sentinela.components import MANIFEST_PUBKEYS
+    dev = DEV_PUBKEYS.intersection(MANIFEST_PUBKEYS)
+    if dev and os.environ.get("SENT_ALLOW_DEV_KEY") != "1":
+        sys.exit("O app ainda confia na chave de DESENVOLVIMENTO do manifesto (components.MANIFEST_PUBKEYS).\n"
+                 "Crie a de release (tools\\make_release_key.py), reassine (tools\\make_manifest.py --resign) e troque a chave.\n"
+                 "Para um build de teste local: defina SENT_ALLOW_DEV_KEY=1.")
+
+
 def main() -> None:
+    check_release_keys()
     if BUILD.exists():
         shutil.rmtree(BUILD)
     BUILD.mkdir()

@@ -123,6 +123,8 @@ Fica de 1 minuto até "até eu parar" observando as conexões **deste computador
 
 Nada de terceiros vem no instalador. A aba **Componentes** explica o que baixar (ex.: ClamAV, a 2ª opinião de antivírus), abre a página oficial e **marca sozinha** o item quando ele está instalado e íntegro. Ao **importar** o pacote o Sentinela confere: assinatura GPG com o fingerprint fixado, SHA-256 do manifesto, e **cada arquivo** extraído (nenhum a mais, nenhum alterado). Na hora de usar, roda de uma cópia privada travada. A lista de componentes é assinada (com número de série contra versões antigas e lista de revogação). Limite: malware que já roda como o seu usuário pode alterar o próprio Sentinela.
 
+**Chave de assinatura (mantenedor):** a lista é assinada com uma chave Ed25519 de **release**, cifrada com senha e guardada fora do PC. Criar uma vez: `python tools\make_release_key.py` (pede a senha no terminal e imprime a chave pública, que vai em `MANIFEST_PUBKEYS` em `sentinela/components.py`). Reassinar o manifesto atual (troca de chave ou novo serial): `python tools\make_manifest.py --resign --serial N`. Chave sem senha é recusada (só `--dev`, para testes), e o `installer\build.py` se recusa a gerar instalador enquanto o app ainda confiar na chave de desenvolvimento (para um build local de teste: `SENT_ALLOW_DEV_KEY=1`).
+
 ## Testes
 
 ```

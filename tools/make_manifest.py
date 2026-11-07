@@ -1,9 +1,10 @@
 """Gera e assina sentinela/manifest.json (lista de componentes de terceiros). Uso (do mantenedor, NUNCA em máquina de usuário):
 
-    python tools\\make_manifest.py --zip <clamav-x.y.z.win.x64.zip> --sig <.sig> --serial 2
+    python tools\\make_manifest.py --zip <clamav-x.y.z.win.x64.zip> --sig <.sig> --serial 3 --key-file <release.pem>
+    python tools\\make_manifest.py --resign --serial 3 --key-file <release.pem>      (só assina de novo o manifesto atual, p.ex. troca de chave)
 
-A chave privada Ed25519 fica FORA do repositório (padrão: %USERPROFILE%\\.sentinela-keys\\manifest_ed25519.pem; em produção, chave offline
-guardada em hardware/cofre). A chave pública impressa deve ser colocada em MANIFEST_PUBKEYS (sentinela/components.py).
+A chave privada é a de RELEASE (tools\\make_release_key.py): PEM cifrado, guardado fora deste PC; a senha é pedida no terminal.
+Chave sem senha só com --dev (testes). Nenhuma chave é criada aqui. A chave pública tem de estar em MANIFEST_PUBKEYS (sentinela/components.py).
 O arquivo .sig GPG do pacote só é conferido aqui com o verificador do próprio Sentinela (fingerprint pinado abaixo)."""
 from __future__ import annotations
 
@@ -11,9 +12,9 @@ import argparse
 import base64
 import hashlib
 import json
-import os
 import re
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -27,28 +28,26 @@ from sentinela.components import canonical  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TALOS_FPR = "5BADCA2665EF59DCF8A23D8B707F0DB480836771"   # conferido em 3 fontes: clamav.net, keys.openpgp.org e GitHub Cisco-Talos/clamav-documentation
-KEY_PATH = Path(os.environ.get("SENT_MANIFEST_KEY", Path.home() / ".sentinela-keys" / "manifest_ed25519.pem"))
+DEFAULT_KEY = Path.home() / ".sentinela-keys" / "release_ed25519.pem"
 
 
-def _lock_dir(d: Path) -> None:
-    """Só o usuário atual lê a pasta da chave (sem herança)."""
-    import subprocess
-    subprocess.run(["icacls", str(d), "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME', '')}:(OI)(CI)F"], capture_output=True)
-
-
-def load_or_create_key() -> Ed25519PrivateKey:
-    """Chave de assinatura do manifesto. Defina SENT_MANIFEST_PASS para proteger o arquivo com senha. PARA RELEASE: chave OFFLINE/hardware,
-    nunca esta chave de desenvolvimento (ver components.MANIFEST_PUBKEYS)."""
-    pw = os.environ.get("SENT_MANIFEST_PASS", "").encode() or None
-    if KEY_PATH.exists():
-        _lock_dir(KEY_PATH.parent)
-        return serialization.load_pem_private_key(KEY_PATH.read_bytes(), pw)
-    KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _lock_dir(KEY_PATH.parent)
-    k = Ed25519PrivateKey.generate()
-    enc = serialization.BestAvailableEncryption(pw) if pw else serialization.NoEncryption()
-    KEY_PATH.write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, enc))
-    print(f"[!] chave NOVA criada em {KEY_PATH} (guarde; em produção use uma chave offline)" + ("" if pw else " [SEM senha: defina SENT_MANIFEST_PASS]"))
+def load_key(path: Path, dev: bool) -> Ed25519PrivateKey:
+    """Carrega a chave de assinatura. Exige PEM cifrado (senha pedida no terminal), salvo --dev."""
+    if not path.exists():
+        sys.exit(f"Chave não encontrada: {path}. Crie a de release com tools\\make_release_key.py (nada é criado aqui).")
+    pem = path.read_bytes()
+    if b"ENCRYPTED" not in pem:
+        if not dev:
+            sys.exit("Chave SEM senha: recusada para release. Use a chave de release cifrada, ou --dev só para testes.")
+        k = serialization.load_pem_private_key(pem, None)
+    else:
+        import getpass
+        try:
+            k = serialization.load_pem_private_key(pem, getpass.getpass(f"Senha de {path.name}: ").encode())
+        except (ValueError, TypeError):
+            sys.exit("Senha incorreta.")
+    if not isinstance(k, Ed25519PrivateKey):
+        sys.exit("A chave não é Ed25519.")
     return k
 
 
@@ -66,13 +65,40 @@ def clamav_allowlist(names: list[str], prefix: str) -> list[str]:
     return sorted(keep)
 
 
+def sign_and_write(manifest: dict, k: Ed25519PrivateKey) -> None:
+    from sentinela.components import MANIFEST_PUBKEYS
+    mb = canonical(manifest)
+    (ROOT / "sentinela" / "manifest.json").write_bytes(mb)
+    (ROOT / "sentinela" / "manifest.sig").write_bytes(base64.b64encode(k.sign(mb)))
+    pub = base64.b64encode(k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+    print("serial", manifest["serial"], "| issued", manifest["issued"])
+    print("CHAVE PÚBLICA:", pub, "(já está em MANIFEST_PUBKEYS)" if pub in MANIFEST_PUBKEYS else "<- coloque em MANIFEST_PUBKEYS e suba MIN_SERIAL")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zip", required=True)
-    ap.add_argument("--sig", required=True)
+    ap.add_argument("--zip")
+    ap.add_argument("--sig")
     ap.add_argument("--key", default=str(ROOT / "tests" / "fixtures" / "talos_clamav_key.asc"))
     ap.add_argument("--serial", type=int, required=True)
+    ap.add_argument("--key-file", default=str(DEFAULT_KEY))
+    ap.add_argument("--resign", action="store_true", help="assina de novo o manifesto atual (conferido antes) com outro serial/chave")
+    ap.add_argument("--dev", action="store_true", help="aceita chave sem senha (só testes)")
     a = ap.parse_args()
+    if a.resign:
+        from sentinela.components import ComponentError, verify_manifest
+        mb = (ROOT / "sentinela" / "manifest.json").read_bytes()
+        try:
+            cur = verify_manifest(mb, (ROOT / "sentinela" / "manifest.sig").read_bytes(), min_serial=0)
+        except ComponentError as e:
+            sys.exit(f"O manifesto atual não confere com as chaves do app ({e}): não reassino conteúdo não verificado.")
+        if a.serial <= cur["serial"]:
+            sys.exit(f"--serial precisa ser maior que o atual ({cur['serial']}).")
+        cur["serial"], cur["issued"] = a.serial, time.strftime("%Y-%m-%d")
+        sign_and_write(cur, load_key(Path(a.key_file), a.dev))
+        return
+    if not (a.zip and a.sig):
+        sys.exit("--zip e --sig são obrigatórios (ou use --resign).")
     zp = Path(a.zip)
     m = re.match(r"clamav-(\d+\.\d+\.\d+)\.win\.x64\.zip$", zp.name)
     if not m:
@@ -93,7 +119,7 @@ def main() -> None:
         while c := f.read(4 << 20):
             h.update(c)
     manifest = {
-        "serial": a.serial, "issued": "2026-10-13",
+        "serial": a.serial, "issued": time.strftime("%Y-%m-%d"),
         "revoked": {"versions": [], "sha256": []},
         "components": {
             "clamav": {
@@ -117,13 +143,8 @@ def main() -> None:
             }
         },
     }
-    mb = canonical(manifest)
-    k = load_or_create_key()
-    (ROOT / "sentinela" / "manifest.json").write_bytes(mb)
-    (ROOT / "sentinela" / "manifest.sig").write_bytes(base64.b64encode(k.sign(mb)))
-    pub = k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    print("arquivos na árvore:", len(tree), "| serial", a.serial)
-    print("CHAVE PÚBLICA para MANIFEST_PUBKEYS:", base64.b64encode(pub).decode())
+    print("arquivos na árvore:", len(tree))
+    sign_and_write(manifest, load_key(Path(a.key_file), a.dev))
 
 
 if __name__ == "__main__":
